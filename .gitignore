@@ -1,0 +1,38 @@
+# 依赖包 (绝对不能提交！)
+node_modules/
+
+# 编译和打包输出目录 (Electron-vite 和 Electron-builder 默认目录)
+dist/
+out/
+release/
+build/
+dist-electron/
+
+# 安装包和二进制文件
+*.exe
+*.dmg
+*.AppImage
+*.zip
+*.tar.gz
+*.blockmap
+
+# 日志文件
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 环境变量 (保护敏感配置)
+.env
+.env.local
+.env.*.local
+
+# 编辑器和系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+scripts/
