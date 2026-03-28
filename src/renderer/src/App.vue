@@ -421,9 +421,48 @@ const importLiteFetch = () => {
   input.click()
 }
 
+// ---------------- 修复：强大的 Postman 导入解析器 ----------------
 const importCollection = async () => {
   const data = await window.electron.ipcRenderer.invoke('import-postman-raw')
-  if (data) { store.addCollection(data); ElMessage.success('Postman collection imported!') }
+  if (data) {
+    // 定义一个递归函数，专门把 Postman 数据“洗”成 LiteFetch 标准格式
+    const sanitizeNode = (node) => {
+      // 1. 强制注入唯一 _id（解决左侧栏打不开、报错的问题）
+      if (!node._id) node._id = 'pm_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36)
+      
+      // 2. 如果是文件夹/集合，递归洗里面的子节点
+      if (node.item && Array.isArray(node.item)) {
+        node.item.forEach(sanitizeNode)
+      } 
+      // 3. 如果是具体的请求，修复 URL 和 Body 格式
+      else if (node.request) {
+        // Postman 的 url 有时是个对象，提取它的 raw 字符串
+        if (typeof node.request.url === 'object') {
+          node.request.url = node.request.url.raw || ''
+        }
+        if (!node.request.header) node.request.header = []
+        if (!node.request.body) node.request.body = { mode: 'raw', raw: '' }
+      }
+    }
+
+    try {
+      // 开始洗数据
+      sanitizeNode(data)
+      
+      // 修复集合变量 (Postman 叫 variable，我们叫 variables)
+      data.variables = []
+      if (data.variable && Array.isArray(data.variable)) {
+        data.variables = data.variable.map(v => ({ key: v.key || '', value: v.value || '' }))
+      }
+
+      // 洗完后存入 Store
+      store.addCollection(data)
+      ElMessage.success('Postman collection imported and sanitized successfully!')
+    } catch (err) {
+      console.error(err)
+      ElMessage.error('Failed to parse Postman collection format.')
+    }
+  }
 }
 const selectPython = async (ext) => {
   const path = await window.electron.ipcRenderer.invoke('select-file', [{ name: ext, extensions: [ext] }])
