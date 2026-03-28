@@ -587,7 +587,13 @@ const ctxAction = (action) => {
 
 const confirmRename = () => {
   const { type, item, name } = renameDialog.value;
-  if (name && name.trim()) { if (type === 'collection') { if(!item.info) item.info = {}; item.info.name = name.trim(); } else item.name = name.trim(); }
+  if (name && name.trim()) { 
+    if (type === 'collection') { if(!item.info) item.info = {}; item.info.name = name.trim(); } 
+    else item.name = name.trim(); 
+
+    store.persist();
+  }
+  
   renameDialog.value.visible = false; ElMessage.success('Renamed successfully.')
 }
 
