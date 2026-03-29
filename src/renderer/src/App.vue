@@ -39,21 +39,57 @@
       </div>
 
       <div v-else id="editor-top">
-        <el-tabs v-model="store.activeTabId" type="card" class="custom-editor-tabs" @tab-remove="closeSingleTab">
-          <el-tab-pane v-for="tab in store.openTabs" :key="tab._id" :name="tab._id" closable>
-            <template #label>
-              <div @contextmenu.prevent="showTabMenu($event, tab._id)" style="display:inline-flex; align-items:center;">
-                <span v-if="store.isTabDirty(tab._id)" class="dirty-dot"></span>
-                <span v-if="tab.pinned" style="margin-right:6px; font-size: 12px;">📌</span>
-                <span :style="{ color: getMethodColor(tab.method), fontSize: '12px', fontWeight: 'bold', marginRight: '8px' }">{{ tab.method || 'REQ' }}</span>
-                <span style="font-size: 13px;">{{ tab.name }}</span>
-              </div>
-            </template>
-          </el-tab-pane>
-        </el-tabs>
+        <div class="editor-tabs-row">
+          <el-tabs v-model="store.activeTabId" type="card" :class="['custom-editor-tabs', { 'is-dragging-tabs': dragTab.isDragging }]" @tab-remove="closeSingleTab">
+            <el-tab-pane v-for="tab in store.openTabs" :key="tab._id" :name="tab._id" closable>
+              <template #label>
+                <div
+                  class="tab-label"
+                  :class="{
+                    'is-drag-source': dragTab.sourceId === tab._id,
+                    'is-drag-target': dragTab.targetId === tab._id,
+                    'is-drop-left': dragTab.targetId === tab._id && dragTab.targetSide === 'left',
+                    'is-drop-right': dragTab.targetId === tab._id && dragTab.targetSide === 'right'
+                  }"
+                  draggable="true"
+                  @dragstart="onTabDragStart($event, tab._id)"
+                  @dragover.prevent="onTabDragOver($event, tab._id)"
+                  @drop.prevent="onTabDrop($event, tab._id)"
+                  @dragend="onTabDragEnd"
+                  @contextmenu.prevent="showTabMenu($event, tab._id)"
+                >
+                  <span v-if="store.isTabDirty(tab._id)" class="dirty-dot"></span>
+                  <el-icon v-if="tab.pinned" class="pin-icon"><Paperclip /></el-icon>
+                  <span :style="{ color: getMethodColor(tab.method), fontSize: '12px', fontWeight: 'bold', marginRight: '8px' }">{{ tab.method || 'REQ' }}</span>
+                  <span style="font-size: 13px;">{{ tab.name }}</span>
+                </div>
+              </template>
+            </el-tab-pane>
+          </el-tabs>
+          <div class="top-actions-panel">
+            <el-button class="top-icon-btn save" circle :disabled="!store.isTabDirty(store.activeTabId)" @click="saveDraft(store.activeTabId)">
+              <svg class="top-icon-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 4h13l3 3v13H4V4z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                <path d="M8 4h8v5H8V4z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                <path d="M8 20v-6h8v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </el-button>
+            <el-button class="top-icon-btn" circle @click="openCodeGenDialog">
+              <svg class="top-icon-svg code" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M8.5 8L5 12l3.5 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M15.5 8L19 12l-3.5 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M13 6l-2 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </el-button>
+          </div>
+        </div>
 
         <div class="url-bar">
-          <el-select v-model="store.activeRequest.request.method" :class="['method-select', (store.activeRequest.request.method || 'GET').toLowerCase()]" style="width: 110px;" popper-class="dark-method-popper">
+          <el-select v-model="activeEnvId" style="width: 100px;" placeholder="Environment" @change="onEnvChange">
+            <el-option v-for="env in environments" :key="env.id" :label="env.name" :value="env.id" />
+          </el-select>
+          <el-button size="default" plain @click="showEnvDialog = true">Envs</el-button>
+          <el-select v-model="store.activeRequest.request.method" :class="['method-select', (store.activeRequest.request.method || 'GET').toLowerCase()]" style="width: 90px;" popper-class="dark-method-popper">
             <el-option label="GET" value="GET"><span style="color: #0cbb52; font-weight: bold;">GET</span></el-option>
             <el-option label="POST" value="POST"><span style="color: #ff6c37; font-weight: bold;">POST</span></el-option>
             <el-option label="PUT" value="PUT"><span style="color: #097bed; font-weight: bold;">PUT</span></el-option>
@@ -68,11 +104,8 @@
             @blur="store.extractUrlVariables" 
             @keyup.enter="sendRequest"
           />
-          <el-button color="#ff6c37" size="large" style="color: white; font-weight: bold; width: 90px; margin: 0;" @click="sendRequest">
+          <el-button color="#ff6c37" size="default" style="color: white; font-weight: bold; width: 90px; margin: 0;" @click="sendRequest">
             Send
-          </el-button>
-          <el-button type="success" size="large" plain :disabled="!store.isTabDirty(store.activeTabId)" @click="saveDraft(store.activeTabId)" style="font-weight: bold; width: 90px; margin: 0; margin-left: 5px;">
-            Save
           </el-button>
         </div>
 
@@ -84,7 +117,7 @@
                   <el-table-column width="60" align="center"><template #default="scope"><el-checkbox v-model="scope.row.enabled"></el-checkbox></template></el-table-column>
                   <el-table-column label="Key" min-width="150" resizable><template #default="scope"><el-input v-model="scope.row.key" placeholder="Key" size="small" clearable></el-input></template></el-table-column>
                   <el-table-column label="Value" min-width="250" resizable><template #default="scope"><el-input v-model="scope.row.value" placeholder="Value" size="small" clearable></el-input></template></el-table-column>
-                  <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link @click="store.activeRequest.request.header.splice(scope.$index, 1)">Delete</el-button></template></el-table-column>
+                  <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link aria-label="Delete header" @click="store.activeRequest.request.header.splice(scope.$index, 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
                 </el-table>
                 <el-button style="margin-top: 15px;" @click="store.activeRequest.request.header.push({key:'', value:'', enabled:true})">+ Add Header</el-button>
               </div>
@@ -98,12 +131,20 @@
 
             <el-tab-pane label="Variables" name="vars">
               <div class="pane-container">
-                <el-alert v-if="store.hasConflict" title="Conflict Warning!" type="error" show-icon style="margin-bottom: 15px;" />
+                <el-alert
+                  v-if="variableConflicts.hasConflict"
+                  title="Variable Conflict Warning"
+                  :description="variableConflicts.message"
+                  type="error"
+                  show-icon
+                  :closable="false"
+                  style="margin-bottom: 15px;"
+                />
                 <el-text tag="b" style="margin-bottom: 8px; display: block;">Static Variables</el-text>
                 <el-table :data="store.activeCollection?.variables" border style="width: 100%; margin-bottom: 15px;" size="small">
                   <el-table-column label="Key" min-width="150" resizable><template #default="scope"><el-input v-model="scope.row.key" placeholder="Key" size="small"></el-input></template></el-table-column>
                   <el-table-column label="Value" min-width="250" resizable><template #default="scope"><el-input v-model="scope.row.value" placeholder="Value" size="small"></el-input></template></el-table-column>
-                  <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link @click="store.activeCollection.variables.splice(scope.$index, 1)">Delete</el-button></template></el-table-column>
+                  <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link aria-label="Delete variable" @click="store.activeCollection.variables.splice(scope.$index, 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
                 </el-table>
                 <el-button style="margin-bottom: 25px;" @click="store.activeCollection?.variables.push({key:'', value:''})">+ Add Variable</el-button>
                 
@@ -174,20 +215,35 @@
           <el-tag v-if="statusCode" :type="statusCode.startsWith('2') ? 'success' : 'danger'" effect="dark" size="small">{{ statusCode }}</el-tag>
           <el-text v-if="statusTime" type="info" size="small" style="margin-left:10px; font-family:monospace;">{{ statusTime }}</el-text>
           <el-text v-if="statusSize" type="info" size="small" style="margin-left:10px; font-family:monospace;">{{ statusSize }}</el-text>
+          <el-radio-group v-model="responseViewMode" size="small" style="margin-left: 12px;">
+            <el-radio-button value="pretty">Pretty</el-radio-button>
+            <el-radio-button value="raw">Raw</el-radio-button>
+            <el-radio-button value="preview">Preview</el-radio-button>
+          </el-radio-group>
           
           <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
-            <el-input v-model="searchQuery" placeholder="Search in response..." size="small" style="width: 200px;" @keyup.enter="nextSearch" clearable>
-              <template #append><el-button @click="nextSearch">🔍</el-button></template>
+            <el-input v-model="searchQuery" :disabled="responseViewMode === 'preview'" placeholder="Search in response..." size="small" style="width: 200px;" @keyup.enter="nextSearch" clearable>
+              <template #append>
+                <el-button :disabled="responseViewMode === 'preview'" @click="nextSearch">
+                  <el-icon><Search /></el-icon>
+                </el-button>
+              </template>
             </el-input>
             <el-text type="info" size="small" style="min-width: 45px; text-align:center;">{{ searchCount }}</el-text>
             <el-button-group size="small" style="margin-right: 10px;">
-              <el-button @click="prevSearch">↑</el-button>
-              <el-button @click="nextSearch">↓</el-button>
+              <el-button :disabled="responseViewMode === 'preview'" @click="prevSearch"><el-icon><Top /></el-icon></el-button>
+              <el-button :disabled="responseViewMode === 'preview'" @click="nextSearch"><el-icon><Bottom /></el-icon></el-button>
             </el-button-group>
             <el-button size="small" type="primary" plain @click="copyResponse">Copy JSON</el-button>
           </div>
         </div>
-        <pre id="responseBody" v-html="responseHtml"></pre>
+        <pre v-if="responseViewMode === 'pretty'" id="responseBody" v-html="responseHtml"></pre>
+        <pre v-else-if="responseViewMode === 'raw'" id="responseBody">{{ responseRawText }}</pre>
+        <div v-else id="responsePreview" class="response-preview-box">
+          <img v-if="previewType === 'image'" :src="previewSrc" alt="response preview" style="max-width:100%; max-height:100%; object-fit: contain;" />
+          <iframe v-else-if="previewType === 'html'" :srcdoc="previewHtml" class="response-preview-frame"></iframe>
+          <el-empty v-else description="Preview not available for this response type" />
+        </div>
       </div>
     </div>
 
@@ -216,6 +272,45 @@
           <el-button type="danger" plain @click="clearHistory">Clear All History</el-button>
           <el-button @click="showHistory = false">Close</el-button>
         </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showEnvDialog" title="Environments" width="760px">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom: 12px;">
+        <el-button type="primary" plain @click="addEnvironment">+ Environment</el-button>
+        <el-text type="info">Switch active environment from URL bar</el-text>
+      </div>
+      <div v-for="(env, idx) in environments" :key="env.id" class="env-card">
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom: 10px;">
+          <el-input v-model="env.name" placeholder="Environment Name" style="width: 220px;" @change="persistEnvironments" />
+          <el-input v-model="env.baseUrl" placeholder="Base URL (e.g. https://api.example.com)" @change="persistEnvironments" />
+          <el-button type="danger" link aria-label="Delete environment" :disabled="environments.length <= 1" @click="removeEnvironment(idx)"><el-icon><Delete /></el-icon></el-button>
+        </div>
+        <el-table :data="env.variables" border size="small">
+          <el-table-column label="Key" min-width="180"><template #default="scope"><el-input v-model="scope.row.key" size="small" @change="persistEnvironments" /></template></el-table-column>
+          <el-table-column label="Value" min-width="220"><template #default="scope"><el-input v-model="scope.row.value" size="small" @change="persistEnvironments" /></template></el-table-column>
+          <el-table-column width="90" align="center"><template #default="scope"><el-button type="danger" link aria-label="Delete env variable" @click="env.variables.splice(scope.$index, 1); persistEnvironments()"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
+        </el-table>
+        <el-button style="margin-top:8px;" size="small" @click="env.variables.push({ key: '', value: '' }); persistEnvironments()">+ Var</el-button>
+      </div>
+      <template #footer>
+        <el-button @click="showEnvDialog = false">Close</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showCodeDialog" title="Generate Request Code" width="760px">
+      <div style="display:flex; gap:10px; margin-bottom: 12px; align-items:center;">
+        <el-select v-model="codeLang" style="width:160px;" @change="refreshCodeSnippet">
+          <el-option label="cURL" value="curl" />
+          <el-option label="Fetch" value="fetch" />
+          <el-option label="Axios" value="axios" />
+          <el-option label="Python requests" value="python" />
+        </el-select>
+        <el-button type="primary" plain @click="copyCodeSnippet">Copy</el-button>
+      </div>
+      <el-input v-model="codeSnippet" type="textarea" :rows="16" readonly style="font-family: Consolas, monospace;" />
+      <template #footer>
+        <el-button @click="showCodeDialog = false">Close</el-button>
       </template>
     </el-dialog>
 
@@ -252,7 +347,9 @@ import { ref, watch, provide, nextTick, computed, onMounted, onUnmounted } from 
 import { useCollectionStore } from './store'
 import SidebarTree from './components/SidebarTree.vue'
 import { marked } from 'marked'
+import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Bottom, Delete, Paperclip, Search, Top } from '@element-plus/icons-vue'
 
 const store = useCollectionStore()
 const currentTab = ref('headers')
@@ -275,14 +372,82 @@ const descMode = ref('preview')
 const notesMode = ref('edit')
 const showHistory = ref(false)
 const historyList = ref(JSON.parse(localStorage.getItem('litefetch_history') || '[]'))
+const dragTab = ref({ sourceId: null, targetId: null, targetSide: 'left', isDragging: false })
+const responseViewMode = ref('pretty')
+const responseRawText = ref('Ready.')
+const previewType = ref('none')
+const previewHtml = ref('')
+const previewSrc = ref('')
+
+const showEnvDialog = ref(false)
+const showCodeDialog = ref(false)
+const codeLang = ref('curl')
+const codeSnippet = ref('')
+
+const defaultEnv = () => ({ id: 'env_' + Date.now(), name: 'Default', baseUrl: '', variables: [] })
+const environments = ref(JSON.parse(localStorage.getItem('litefetch_environments') || 'null') || [defaultEnv()])
+const activeEnvId = ref(localStorage.getItem('litefetch_active_env') || environments.value[0].id)
 
 const dynamicVarsList = computed(() => {
   return Object.entries(store.pythonVars).map(([key, value]) => ({ key, value }))
 })
 
+const activeEnvironment = computed(() => {
+  return environments.value.find(e => e.id === activeEnvId.value) || environments.value[0]
+})
+
+const variableConflicts = computed(() => {
+  const normalizeKeys = (arr = []) => {
+    return new Set(arr.map(v => (v?.key || '').trim()).filter(Boolean))
+  }
+  const overlap = (a, b) => [...a].filter(k => b.has(k))
+
+  const envKeys = normalizeKeys(activeEnvironment.value?.variables || [])
+  const collectionKeys = normalizeKeys(store.activeCollection?.variables || [])
+  const pythonKeys = new Set(Object.keys(store.pythonVars || {}).map(k => (k || '').trim()).filter(Boolean))
+
+  const envVsCollection = overlap(envKeys, collectionKeys)
+  const envVsPython = overlap(envKeys, pythonKeys)
+  const collectionVsPython = overlap(collectionKeys, pythonKeys)
+
+  const sections = []
+  if (envVsCollection.length) sections.push(`Environment vs Collection: ${envVsCollection.join(', ')}`)
+  if (envVsPython.length) sections.push(`Environment vs Python: ${envVsPython.join(', ')}`)
+  if (collectionVsPython.length) sections.push(`Collection vs Python: ${collectionVsPython.join(', ')}`)
+
+  return {
+    hasConflict: sections.length > 0,
+    message: sections.join(' | ')
+  }
+})
+
 const saveDraft = (tabId) => {
   store.saveTab(tabId)
   ElMessage.success('Saved successfully!')
+}
+
+const persistEnvironments = () => {
+  localStorage.setItem('litefetch_environments', JSON.stringify(environments.value))
+  localStorage.setItem('litefetch_active_env', activeEnvId.value)
+}
+
+const onEnvChange = () => {
+  persistEnvironments()
+}
+
+const addEnvironment = () => {
+  const env = { id: 'env_' + Date.now(), name: `Env ${environments.value.length + 1}`, baseUrl: '', variables: [] }
+  environments.value.push(env)
+  activeEnvId.value = env.id
+  persistEnvironments()
+}
+
+const removeEnvironment = (idx) => {
+  const removed = environments.value[idx]
+  environments.value.splice(idx, 1)
+  if (!environments.value.length) environments.value.push(defaultEnv())
+  if (removed?.id === activeEnvId.value) activeEnvId.value = environments.value[0].id
+  persistEnvironments()
 }
 
 const handleKeydown = (e) => {
@@ -316,8 +481,38 @@ const confirmCloseDirty = async (tabs) => {
 
 const togglePinTab = () => {
   const tab = store.openTabs.find(t => t._id === tabCtxMenu.value.tabId)
-  if (tab) tab.pinned = !tab.pinned
+  if (tab) store.setTabPinned(tab._id, !tab.pinned)
   hideAllMenus()
+}
+
+const onTabDragStart = (e, tabId) => {
+  dragTab.value = { sourceId: tabId, targetId: null, targetSide: 'left', isDragging: true }
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', tabId)
+  }
+}
+
+const onTabDragOver = (e, targetTabId) => {
+  if (!dragTab.value.isDragging || dragTab.value.sourceId === targetTabId) return
+  const targetEl = e.currentTarget
+  const rect = targetEl.getBoundingClientRect()
+  const offsetX = e.clientX - rect.left
+  const side = offsetX < rect.width / 2 ? 'left' : 'right'
+  dragTab.value.targetId = targetTabId
+  dragTab.value.targetSide = side
+}
+
+const onTabDrop = (e, targetTabId) => {
+  const sourceTabId = dragTab.value.sourceId || e.dataTransfer?.getData('text/plain')
+  if (sourceTabId && sourceTabId !== targetTabId) {
+    store.moveTab(sourceTabId, targetTabId, dragTab.value.targetSide)
+  }
+  onTabDragEnd()
+}
+
+const onTabDragEnd = () => {
+  dragTab.value = { sourceId: null, targetId: null, targetSide: 'left', isDragging: false }
 }
 const closeSingleTab = async (tabId) => {
   const tab = store.openTabs.find(t => t._id === tabId)
@@ -379,9 +574,8 @@ const handleLinkClick = (e) => {
   if (a && a.href && (a.href.startsWith('http://') || a.href.startsWith('https://'))) {
     e.preventDefault() // 阻止默认的应用内跳转
     try {
-      // 调用 Electron 的 shell 模块在外部默认浏览器打开
-      const { shell } = window.require('electron')
-      shell.openExternal(a.href)
+      // 通过主进程安全地打开外部链接
+      window.electron.ipcRenderer.invoke('open-external', a.href)
     } catch (err) {
       console.error('Failed to open external link', err)
       window.open(a.href, '_blank') // 兜底方案
@@ -423,29 +617,29 @@ const importLiteFetch = () => {
 
 // ---------------- 修复：强大的 Postman 导入解析器 ----------------
 const importCollection = async () => {
-  const data = await window.electron.ipcRenderer.invoke('import-postman-raw')
-  if (data) {
-    // 定义一个递归函数，专门把 Postman 数据“洗”成 LiteFetch 标准格式
-    const sanitizeNode = (node) => {
-      // 1. 强制注入唯一 _id（解决左侧栏打不开、报错的问题）
-      if (!node._id) node._id = 'pm_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36)
-      
-      // 2. 如果是文件夹/集合，递归洗里面的子节点
-      if (node.item && Array.isArray(node.item)) {
-        node.item.forEach(sanitizeNode)
-      } 
-      // 3. 如果是具体的请求，修复 URL 和 Body 格式
-      else if (node.request) {
-        // Postman 的 url 有时是个对象，提取它的 raw 字符串
-        if (typeof node.request.url === 'object') {
-          node.request.url = node.request.url.raw || ''
+  try {
+    const data = await window.electron.ipcRenderer.invoke('import-postman-raw')
+    if (data) {
+      // 定义一个递归函数，专门把 Postman 数据“洗”成 LiteFetch 标准格式
+      const sanitizeNode = (node) => {
+        // 1. 强制注入唯一 _id（解决左侧栏打不开、报错的问题）
+        if (!node._id) node._id = 'pm_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36)
+        
+        // 2. 如果是文件夹/集合，递归洗里面的子节点
+        if (node.item && Array.isArray(node.item)) {
+          node.item.forEach(sanitizeNode)
+        } 
+        // 3. 如果是具体的请求，修复 URL 和 Body 格式
+        else if (node.request) {
+          // Postman 的 url 有时是个对象，提取它的 raw 字符串
+          if (typeof node.request.url === 'object') {
+            node.request.url = node.request.url.raw || ''
+          }
+          if (!node.request.header) node.request.header = []
+          if (!node.request.body) node.request.body = { mode: 'raw', raw: '' }
         }
-        if (!node.request.header) node.request.header = []
-        if (!node.request.body) node.request.body = { mode: 'raw', raw: '' }
       }
-    }
 
-    try {
       // 开始洗数据
       sanitizeNode(data)
       
@@ -458,10 +652,10 @@ const importCollection = async () => {
       // 洗完后存入 Store
       store.addCollection(data)
       ElMessage.success('Postman collection imported and sanitized successfully!')
-    } catch (err) {
-      console.error(err)
-      ElMessage.error('Failed to parse Postman collection format.')
     }
+  } catch (err) {
+    console.error(err)
+    ElMessage.error(err?.message || 'Failed to parse Postman collection format.')
   }
 }
 const selectPython = async (ext) => {
@@ -480,36 +674,175 @@ const runPython = async () => {
 const resolveVars = (text) => {
   if (!text || typeof text !== 'string') return text || ''
   const staticMap = {}; store.activeCollection?.variables?.forEach(v => { if (v.key) staticMap[v.key] = v.value })
-  const combined = { ...staticMap, ...store.pythonVars }
+  const envMap = {}
+  ;(activeEnvironment.value?.variables || []).forEach(v => { if (v.key) envMap[v.key] = v.value })
+  const combined = { ...envMap, ...staticMap, ...store.pythonVars }
   return text.replace(/\{\{(.+?)\}\}/g, (match, key) => combined[key.trim()] ?? match)
 }
 
-const sendRequest = async () => {
-  if (store.hasConflict) return ElMessage.error("Please resolve Variable Conflicts first.")
-  const req = store.activeRequest; if (!req) return
-
-  const requestClient = window.require('axios') 
-  let finalUrl = resolveVars(req.request.url).trim()
+const buildFinalRequest = () => {
+  const req = store.activeRequest
+  if (!req) return null
   const method = (req.request.method || 'GET').toUpperCase()
-  const headersObj = {}; ;(req.request.header || []).forEach(h => { if (h.key && h.enabled !== false) headersObj[h.key.trim()] = resolveVars(h.value).trim() })
-  
-  let data = null
-  if (['POST', 'PUT', 'PATCH'].includes(method)) {
-    try { data = JSON.parse(resolveVars(req.request.body.raw)) } catch(e){ data = resolveVars(req.request.body.raw) }
+  const resolvedUrl = resolveVars(req.request.url).trim()
+  const baseUrl = resolveVars((activeEnvironment.value?.baseUrl || '').trim())
+  const joinUrl = (base, path) => {
+    if (!base) return path
+    if (!path) return base
+    const baseHasSlash = base.endsWith('/')
+    const pathHasSlash = path.startsWith('/')
+    if (baseHasSlash && pathHasSlash) return base + path.slice(1)
+    if (!baseHasSlash && !pathHasSlash) return `${base}/${path}`
+    return base + path
   }
+  const finalUrl = /^https?:\/\//i.test(resolvedUrl) ? resolvedUrl : joinUrl(baseUrl, resolvedUrl)
+  const headersObj = {}
+  ;(req.request.header || []).forEach(h => {
+    if (h.key && h.enabled !== false) headersObj[h.key.trim()] = resolveVars(h.value).trim()
+  })
+  let bodyData = null
+  if (['POST', 'PUT', 'PATCH'].includes(method)) {
+    const rawBody = resolveVars(req.request.body?.raw || '')
+    try { bodyData = JSON.parse(rawBody) } catch { bodyData = rawBody }
+  }
+  return { method, finalUrl, headersObj, bodyData }
+}
+
+const refreshCodeSnippet = () => {
+  const payload = buildFinalRequest()
+  if (!payload) {
+    codeSnippet.value = 'No active request selected.'
+    return
+  }
+  const { method, finalUrl, headersObj, bodyData } = payload
+  const headersEntries = Object.entries(headersObj)
+  const bodyString = bodyData == null ? '' : (typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData, null, 2))
+
+  if (codeLang.value === 'curl') {
+    const lines = [
+      `curl -X ${method} ${JSON.stringify(finalUrl)}`,
+      ...headersEntries.map(([k, v]) => `  -H ${JSON.stringify(`${k}: ${v}`)}`)
+    ]
+    if (bodyData != null) lines.push(`  --data-raw ${JSON.stringify(bodyString)}`)
+    codeSnippet.value = lines.join(' \\\n')
+    return
+  }
+
+  if (codeLang.value === 'fetch') {
+    codeSnippet.value = `fetch(${JSON.stringify(finalUrl)}, {
+  method: ${JSON.stringify(method)},
+  headers: ${JSON.stringify(headersObj, null, 2)},
+${bodyData == null ? '' : `  body: ${JSON.stringify(bodyString)},\n`} }).then(async (res) => {
+  const text = await res.text()
+  console.log(res.status, text)
+})`
+    return
+  }
+
+  if (codeLang.value === 'python') {
+    const pyData = bodyData == null
+      ? ''
+      : (typeof bodyData === 'string'
+        ? `data = ${JSON.stringify(bodyData)}\n\n`
+        : `data = ${JSON.stringify(bodyData, null, 2)}\n\n`)
+    codeSnippet.value = `import requests
+
+url = ${JSON.stringify(finalUrl)}
+headers = ${JSON.stringify(headersObj, null, 2)}
+${pyData}response = requests.request(
+    method=${JSON.stringify(method)},
+    url=url,
+    headers=headers,
+${bodyData == null ? '' : '    data=data,\n'}    timeout=15
+)
+
+print(response.status_code)
+print(response.text)`
+    return
+  }
+
+  codeSnippet.value = `import axios from 'axios'
+
+axios({
+  method: ${JSON.stringify(method)},
+  url: ${JSON.stringify(finalUrl)},
+  headers: ${JSON.stringify(headersObj, null, 2)},
+${bodyData == null ? '' : `  data: ${JSON.stringify(bodyData, null, 2)},\n`} }).then((res) => {
+  console.log(res.status, res.data)
+})`
+}
+
+const openCodeGenDialog = () => {
+  showCodeDialog.value = true
+  refreshCodeSnippet()
+}
+
+const copyCodeSnippet = async () => {
+  await navigator.clipboard.writeText(codeSnippet.value || '')
+  ElMessage.success('Code copied.')
+}
+
+const updateResponseViewData = (payload, headers = {}) => {
+  const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)
+  responseRawText.value = text
+  responseHtml.value = colorizeJSON(payload)
+  const contentType = String(headers['content-type'] || headers['Content-Type'] || '').toLowerCase()
+
+  if (contentType.includes('text/html')) {
+    previewType.value = 'html'
+    previewHtml.value = typeof payload === 'string' ? payload : text
+    previewSrc.value = ''
+  } else if (contentType.startsWith('image/')) {
+    previewType.value = 'image'
+    previewSrc.value = typeof payload === 'string' ? payload : ''
+    previewHtml.value = ''
+  } else {
+    previewType.value = 'none'
+    previewHtml.value = ''
+    previewSrc.value = ''
+  }
+}
+
+const sendRequest = async () => {
+  if (variableConflicts.value.hasConflict) return ElMessage.error('Please resolve variable conflicts first.')
+  const req = store.activeRequest; if (!req) return
+  const payload = buildFinalRequest(); if (!payload) return
+  const { method, finalUrl, headersObj, bodyData } = payload
+
+  const requestClient = window.electron?.ipcRenderer ? null : axios
 
   responseHtml.value = `Sending...`; statusCode.value = 'Loading...'; statusTime.value = ''; statusSize.value = ''; searchQuery.value = '' 
   const startTime = Date.now()
 
   try {
-    const res = await requestClient({ method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : data, timeout: 15000 })
-    const size = new Blob([typeof res.data === 'string' ? res.data : JSON.stringify(res.data)]).size
-    statusSize.value = formatSize(size); responseHtml.value = colorizeJSON(res.data)
+    const res = window.electron?.ipcRenderer
+      ? await window.electron.ipcRenderer.invoke('http-request', {
+          method,
+          url: finalUrl,
+          headers: headersObj,
+          data: ['GET', 'HEAD'].includes(method) ? undefined : bodyData,
+          timeout: 15000
+        })
+      : await requestClient({ method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : bodyData, timeout: 15000 })
+
+    if (res.ok === false) {
+      const errData = res.data || res.message || 'Request failed'
+      statusSize.value = formatSize(new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size)
+      updateResponseViewData(errData, res.headers || {})
+      statusCode.value = res.status ? `${res.status} ${res.statusText}` : 'ERROR'
+      statusTime.value = `${Date.now() - startTime} ms`
+      appendToHistory(req, statusCode.value)
+      return
+    }
+
+    const resultData = res.data
+    const size = new Blob([typeof resultData === 'string' ? resultData : JSON.stringify(resultData)]).size
+    statusSize.value = formatSize(size); updateResponseViewData(resultData, res.headers || {})
     statusCode.value = `${res.status} ${res.statusText}`; statusTime.value = `${Date.now() - startTime} ms`; appendToHistory(req, statusCode.value)
   } catch (err) {
     const errData = err.response?.data || err.message
     statusSize.value = formatSize(new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size)
-    responseHtml.value = colorizeJSON(errData); statusCode.value = err.response ? `${err.response.status} ${err.response.statusText}` : 'ERROR'
+    updateResponseViewData(errData, err.response?.headers || {}); statusCode.value = err.response ? `${err.response.status} ${err.response.statusText}` : 'ERROR'
     statusTime.value = `${Date.now() - startTime} ms`; appendToHistory(req, statusCode.value)
   }
 }
@@ -523,6 +856,11 @@ const highlightCurrentMatch = () => {
 }
 
 const executeSearch = () => {
+  if (responseViewMode.value === 'preview') {
+    searchCount.value = ''
+    currentSearchIndex.value = 0
+    return
+  }
   const pre = document.getElementById('responseBody'); if (!pre) return
   pre.querySelectorAll('mark').forEach(m => { const p = m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize(); });
   if (!searchQuery.value) { searchCount.value = ""; currentSearchIndex.value = 0; return; }
@@ -547,6 +885,7 @@ const executeSearch = () => {
 const nextSearch = () => { const marks = document.querySelectorAll('#responseBody mark.search-mark'); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value >= marks.length ? 1 : currentSearchIndex.value + 1; highlightCurrentMatch() }
 const prevSearch = () => { const marks = document.querySelectorAll('#responseBody mark.search-mark'); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value <= 1 ? marks.length : currentSearchIndex.value - 1; highlightCurrentMatch() }
 watch([searchQuery, responseHtml], () => { nextTick(() => { executeSearch() }) })
+watch(responseViewMode, () => { nextTick(() => { executeSearch() }) })
 
 const appendToHistory = (req, code) => {
   const item = { 
@@ -561,43 +900,70 @@ const restoreHistory = (h) => {
   if (store.collections.length === 0) store.addCollection({ _id: 'col_' + Date.now(), info: { name: 'Restored History' }, item: [] })
   const targetCol = store.collections[0]; if (!targetCol.item) targetCol.item = []
   const newReq = { _id: 'req_' + Math.random().toString(36).substr(2, 9), name: "History: " + (h.url.split('?')[0].split('/').pop() || 'Request').substring(0, 15), request: { method: h.method || 'GET', url: h.url || '', header: h.header ? JSON.parse(JSON.stringify(h.header)) : [], body: h.body ? JSON.parse(JSON.stringify(h.body)) : { mode: 'raw', raw: '' } } }
-  targetCol.item.push(newReq); store.openTab(newReq); showHistory.value = false; ElMessage.success('History restored.')
+  targetCol.item.push(newReq); store.persist(); store.openTab(newReq); showHistory.value = false; ElMessage.success('History restored.')
 }
 
 const showContextMenu = (e, type, item, parentArray, index) => { hideAllMenus(); ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY, type, item, parentArray, index } }
 provide('showContextMenu', showContextMenu)
 
-const ctxAction = (action) => {
+const ctxAction = async (action) => {
   const { type, item, parentArray, index } = ctxMenu.value
   const targetArr = type === 'collection' ? item.item : item.item
   if (action === 'addReq') store.addNewReq(targetArr)
   if (action === 'addFolder') store.addFolder(targetArr)
   if (action === 'duplicate') store.duplicateReq(parentArray, index)
-  if (action === 'delete') { type === 'collection' ? store.deleteCol(index) : store.deleteItem(parentArray, index) }
+  if (action === 'delete') {
+    const typeLabel = type === 'collection' ? 'collection' : (item?.item ? 'folder' : 'request')
+    const name = type === 'collection' ? (item?.info?.name || 'Collection') : (item?.name || item?.info?.name || 'Unnamed')
+    try {
+      await ElMessageBox.confirm(
+        `Delete ${typeLabel} \"${name}\"? This action cannot be undone.`,
+        'Confirm Delete',
+        { confirmButtonText: 'Delete', cancelButtonText: 'Cancel', type: 'warning' }
+      )
+      type === 'collection' ? store.deleteCol(index) : store.deleteItem(parentArray, index)
+      ElMessage.success('Deleted successfully.')
+    } catch {
+      hideAllMenus()
+      return
+    }
+  }
   if (action === 'moveUp' || action === 'moveDown') {
     const arr = type === 'collection' ? store.collections : parentArray
     if (arr && arr.length > 0) {
       const targetIndex = action === 'moveUp' ? index - 1 : index + 1
-      if (targetIndex >= 0 && targetIndex < arr.length) { const temp = arr[index]; arr[index] = arr[targetIndex]; arr[targetIndex] = temp }
+      if (targetIndex >= 0 && targetIndex < arr.length) { const temp = arr[index]; arr[index] = arr[targetIndex]; arr[targetIndex] = temp; store.persist() }
     }
   }
-  if (action === 'rename') { const currentName = type === 'collection' ? (item.info?.name || 'Collection') : item.name; renameDialog.value = { visible: true, name: currentName, type, item }; }
+  if (action === 'rename') {
+    const currentName = (type === 'collection' || type === 'folder')
+      ? (item.info?.name || item.name || (type === 'collection' ? 'Collection' : 'Folder'))
+      : item.name
+    renameDialog.value = { visible: true, name: currentName, type, item }
+  }
   hideAllMenus()
 }
 
 const confirmRename = () => {
   const { type, item, name } = renameDialog.value;
-  if (name && name.trim()) { 
-    if (type === 'collection') { if(!item.info) item.info = {}; item.info.name = name.trim(); } 
-    else item.name = name.trim(); 
+  if (name && name.trim()) {
+    if (type === 'collection' || type === 'folder') { if (!item.info) item.info = {}; item.info.name = name.trim() }
+    else item.name = name.trim()
 
-    store.persist();
+    store.persist()
   }
   
   renameDialog.value.visible = false; ElMessage.success('Renamed successfully.')
 }
 
-const onToggle = (id, e) => { if (e.target.open) { if (!store.expandedFolders.includes(id)) store.expandedFolders.push(id) } else store.expandedFolders = store.expandedFolders.filter(x => x !== id) }
+const onToggle = (id, e) => {
+  if (e.target.open) {
+    if (!store.expandedFolders.includes(id)) store.expandedFolders.push(id)
+  } else {
+    store.expandedFolders = store.expandedFolders.filter(x => x !== id)
+  }
+  store.persistExpandedFolders()
+}
 const startResizeSidebar = () => { const move = (e) => { sidebarWidth.value = Math.max(200, Math.min(e.clientX, 800)) }; const stop = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', stop) }; document.addEventListener('mousemove', move); document.addEventListener('mouseup', stop) }
 const startResizeResponse = () => { const move = (e) => { responseHeight.value = Math.max(100, window.innerHeight - e.clientY) }; const stop = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', stop) }; document.addEventListener('mousemove', move); document.addEventListener('mouseup', stop) }
 const copyResponse = () => { const pre = document.getElementById('responseBody'); if(pre) { navigator.clipboard.writeText(pre.innerText); ElMessage.success('Copied to clipboard!') } }
@@ -631,6 +997,58 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 #empty-state { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; background: var(--bg); }
 #editor-top { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
+.editor-tabs-row { display: flex; align-items: center; background: var(--sidebar); }
+.editor-tabs-row .custom-editor-tabs { flex: 1; min-width: 0; }
+
+.top-actions-panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 12px;
+}
+
+.top-icon-btn {
+  margin: 0 !important;
+  border: 1px solid #414243 !important;
+  border-radius: 999px !important;
+  background: #242528 !important;
+  color: #cfd3dc !important;
+  width: 30px;
+  height: 30px;
+  min-width: 30px !important;
+  padding: 0 !important;
+}
+
+.top-icon-btn:hover {
+  background: #313338 !important;
+  color: #ffffff !important;
+}
+
+.top-icon-btn:disabled {
+  color: #7a7f89 !important;
+}
+
+.top-icon-btn.save {
+  background: #223224 !important;
+  color: #9ad39f !important;
+}
+
+.top-icon-btn.save:hover {
+  background: #2d4630 !important;
+  color: #b7e7bc !important;
+}
+
+.top-icon-svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.top-icon-svg.code {
+  width: 17px;
+  height: 17px;
+}
+
 /* URL 地址栏 */
 .url-bar { display: flex; padding: 12px 15px; border-bottom: 1px solid var(--border); gap: 10px; flex-shrink: 0; background: var(--bg); align-items: center; }
 
@@ -641,9 +1059,30 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 .dark-method-popper .el-popper__arrow::before { background-color: #2b2b2c !important; border: 1px solid #414243 !important; }
 
 /* 修复 Tabs 高度与滚动机制 */
-.custom-editor-tabs .el-tabs__header { margin: 0; background: var(--sidebar); border-bottom-color: var(--border); }
+.custom-editor-tabs .el-tabs__header { margin: 0; background: var(--sidebar); border-bottom: none !important; box-shadow: none !important; }
+.custom-editor-tabs.el-tabs--card > .el-tabs__header { border-bottom: none !important; }
+.custom-editor-tabs.el-tabs--card > .el-tabs__header .el-tabs__nav { border: none !important; }
+.custom-editor-tabs .el-tabs__nav-wrap::after { height: 0 !important; }
 .custom-editor-tabs .el-tabs__item { border-top: none !important; border-color: var(--border) !important; font-size: 13px; color: #a3a6ad; }
-.custom-editor-tabs .el-tabs__item.is-active { background: var(--bg); color: #fff; }
+.custom-editor-tabs .el-tabs__item.is-active { background: var(--bg); color: #fff; border-bottom-color: transparent !important; }
+.custom-editor-tabs.el-tabs--card > .el-tabs__header .el-tabs__item.is-active { border-bottom-color: transparent !important; }
+.tab-label { position: relative; display:inline-flex; align-items:center; cursor: grab; user-select: none; transition: opacity 0.15s ease, transform 0.15s ease; }
+.is-dragging-tabs .tab-label.is-drag-source { opacity: 0.55; cursor: grabbing; }
+.is-dragging-tabs .tab-label.is-drag-target { transform: translateY(-1px); background: rgba(255, 108, 55, 0.08); border-radius: 4px; }
+.tab-label.is-drop-left::before,
+.tab-label.is-drop-right::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  background: #ff6c37;
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px rgba(255, 108, 55, 0.18);
+}
+.tab-label.is-drop-left::before { left: -5px; }
+.tab-label.is-drop-right::after { right: -5px; }
+.pin-icon { margin-right: 6px; font-size: 12px; color: #e6a23c; }
 
 .tab-content-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .config-tabs { flex: 1; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
@@ -657,6 +1096,8 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 #response-panel { display: flex; flex-direction: column; flex-shrink: 0; background: var(--bg); border-top: 1px solid var(--border); }
 .res-toolbar { padding: 8px 15px; background: var(--sidebar); display: flex; border-bottom: 1px solid var(--border); align-items: center; }
 #responseBody { flex: 1; margin: 0; padding: 15px; background: #1e1e1e; color: #d4d4d4; font-family: monospace; overflow: auto; font-size: 13px; line-height: 1.5; }
+.response-preview-box { flex: 1; padding: 12px; background: #1e1e1e; overflow: auto; display: flex; align-items: center; justify-content: center; }
+.response-preview-frame { width: 100%; height: 100%; border: none; background: #fff; min-height: 300px; }
 
 /* JSON 高亮 */
 .json-key { color: #9cdcfe; } .json-string { color: #ce9178; } .json-num { color: #b5cea8; }
@@ -706,6 +1147,11 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
   color: #cfd3dc !important;
 }
 
+.url-input {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ================= 历史记录列表排版优化 ================= */
 .history-item { 
   display: flex; 
@@ -722,6 +1168,7 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 .history-url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 13px; color: #cfd3dc; }
 .history-status { width: 60px; text-align: right; font-weight: bold; font-family: monospace; flex-shrink: 0; }
 .history-time { width: 70px; text-align: right; color: #909399; font-family: monospace; font-size: 12px; flex-shrink: 0; }
+.env-card { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 12px; background: var(--sidebar); }
 
 /* ================= 左侧栏顶级 Collection 样式 ================= */
 #collection-repo summary { list-style: none; outline: none; }

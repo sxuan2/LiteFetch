@@ -32,6 +32,7 @@ const showContextMenu = inject('showContextMenu')
 const onToggle = (id, e) => {
   if (e.target.open) { if (!store.expandedFolders.includes(id)) store.expandedFolders.push(id) }
   else { store.expandedFolders = store.expandedFolders.filter(x => x !== id) }
+  store.persistExpandedFolders()
 }
 
 const getMethodColor = (method) => {

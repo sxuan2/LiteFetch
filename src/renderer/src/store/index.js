@@ -54,6 +54,39 @@ export const useCollectionStore = defineStore('collection', {
     }
   },
   actions: {
+    normalizePinnedTabOrder() {
+      const pinnedTabs = this.openTabs.filter(t => t.pinned)
+      const unpinnedTabs = this.openTabs.filter(t => !t.pinned)
+      this.openTabs = [...pinnedTabs, ...unpinnedTabs]
+    },
+    setTabPinned(tabId, pinned) {
+      const tabIndex = this.openTabs.findIndex(t => t._id === tabId)
+      if (tabIndex === -1) return
+      const tab = this.openTabs[tabIndex]
+      if (tab.pinned === pinned) return
+
+      tab.pinned = pinned
+      this.openTabs.splice(tabIndex, 1)
+
+      const firstUnpinnedIndex = this.openTabs.findIndex(t => !t.pinned)
+      const insertIndex = firstUnpinnedIndex === -1 ? this.openTabs.length : firstUnpinnedIndex
+      this.openTabs.splice(insertIndex, 0, tab)
+      this.normalizePinnedTabOrder()
+    },
+    moveTab(sourceTabId, targetTabId, position = 'left') {
+      if (!sourceTabId || !targetTabId || sourceTabId === targetTabId) return
+      const sourceIndex = this.openTabs.findIndex(t => t._id === sourceTabId)
+      const targetIndex = this.openTabs.findIndex(t => t._id === targetTabId)
+      if (sourceIndex < 0 || targetIndex < 0) return
+
+      const tabs = [...this.openTabs]
+      const [moved] = tabs.splice(sourceIndex, 1)
+      const normalizedTargetIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
+      const insertIndex = position === 'right' ? normalizedTargetIndex + 1 : normalizedTargetIndex
+      tabs.splice(insertIndex, 0, moved)
+      this.openTabs = tabs
+      this.normalizePinnedTabOrder()
+    },
     // [找回丢失的功能]：输入 URL 时失去焦点，自动把 {{xxx}} 提取到变量表
     extractUrlVariables() {
       const req = this.activeRequest
@@ -108,6 +141,9 @@ export const useCollectionStore = defineStore('collection', {
     closeTab(tabId) {
       this.openTabs = this.openTabs.filter(t => t._id !== tabId)
       if (this.activeTabId === tabId) this.activeTabId = this.openTabs.length > 0 ? this.openTabs[this.openTabs.length - 1]._id : null
+    },
+    persistExpandedFolders() {
+      localStorage.setItem('pilot_expanded_folders', JSON.stringify(this.expandedFolders))
     },
     persist() { localStorage.setItem('pilot_collections', JSON.stringify(this.collections)) },
     addCollection(data) { this.collections.push(data); this.persist() },

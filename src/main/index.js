@@ -2,6 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn } from 'child_process'
+import axios from 'axios'
 import fs from 'fs'
 import path from 'path'
 
@@ -16,9 +17,9 @@ function createWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      nodeIntegration: true,
-      contextIsolation: false,
-      webSecurity: false
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true
     }
   })
 
@@ -90,7 +91,43 @@ app.whenReady().then(() => {
       properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }]
     })
     if (canceled || filePaths.length === 0) return null
-    return JSON.parse(fs.readFileSync(filePaths[0], 'utf-8'))
+    try {
+      return JSON.parse(fs.readFileSync(filePaths[0], 'utf-8'))
+    } catch {
+      throw new Error('Invalid JSON format in selected Postman file.')
+    }
+  })
+
+  ipcMain.handle('open-external', async (event, url) => {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false
+    await shell.openExternal(url)
+    return true
+  })
+
+  ipcMain.handle('http-request', async (event, config = {}) => {
+    const { method = 'GET', url = '', headers = {}, data, timeout = 15000 } = config
+    try {
+      const res = await axios({ method, url, headers, data, timeout })
+      return {
+        ok: true,
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers || {},
+        data: res.data
+      }
+    } catch (err) {
+      if (err.response) {
+        return {
+          ok: false,
+          status: err.response.status,
+          statusText: err.response.statusText,
+          headers: err.response.headers || {},
+          data: err.response.data,
+          message: err.message
+        }
+      }
+      return { ok: false, status: 0, statusText: 'ERROR', headers: {}, data: err.message, message: err.message }
+    }
   })
 
   ipcMain.handle('select-file', async (event, filters) => {
@@ -100,13 +137,68 @@ app.whenReady().then(() => {
 
   ipcMain.handle('run-python', async (event, scriptPath, pythonExePath) => {
     return new Promise((resolve, reject) => {
-      const exePath = pythonExePath || 'python'
+      const exePath = (pythonExePath || 'python').trim()
+      const isNamedPython = ['python', 'python3', 'py'].includes(exePath.toLowerCase())
+      if (!isNamedPython && !path.isAbsolute(exePath)) {
+        reject('Invalid python executable path.')
+        return
+      }
+      if (!isNamedPython) {
+        const ext = path.extname(exePath).toLowerCase()
+        if (!fs.existsSync(exePath) || (process.platform === 'win32' && ext !== '.exe')) {
+          reject('Python executable not found or invalid.')
+          return
+        }
+      }
+
       const absPath = path.isAbsolute(scriptPath) ? scriptPath : path.join(app.getAppPath(), scriptPath)
+      if (!fs.existsSync(absPath)) {
+        reject('Python script file does not exist.')
+        return
+      }
+
       const python = spawn(exePath, [absPath])
+      const MAX_OUTPUT_BYTES = 1024 * 1024 // 1MB
+      const TIMEOUT_MS = 30_000
+      let settled = false
       let dataString = '', errorString = ''
-      python.stdout.on('data', (data) => dataString += data.toString())
-      python.stderr.on('data', (data) => errorString += data.toString())
+      const timeout = setTimeout(() => {
+        if (settled) return
+        settled = true
+        python.kill()
+        reject(`Python script timed out after ${TIMEOUT_MS / 1000}s.`)
+      }, TIMEOUT_MS)
+
+      python.stdout.on('data', (data) => {
+        if (settled) return
+        dataString += data.toString()
+        if (Buffer.byteLength(dataString, 'utf8') > MAX_OUTPUT_BYTES) {
+          settled = true
+          clearTimeout(timeout)
+          python.kill()
+          reject('Python script output exceeded 1MB limit.')
+        }
+      })
+      python.stderr.on('data', (data) => {
+        if (settled) return
+        errorString += data.toString()
+        if (Buffer.byteLength(errorString, 'utf8') > MAX_OUTPUT_BYTES) {
+          settled = true
+          clearTimeout(timeout)
+          python.kill()
+          reject('Python script error output exceeded 1MB limit.')
+        }
+      })
+      python.on('error', (err) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        reject(err.message || 'Failed to launch Python process.')
+      })
       python.on('close', (code) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
         if (code === 0) {
           try { resolve(JSON.parse(dataString.trim())) } catch (e) { reject("Parse Error: " + dataString) }
         } else { reject(errorString) }
