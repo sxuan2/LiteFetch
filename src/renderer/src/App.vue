@@ -548,8 +548,20 @@ const formatSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
+// const colorizeJSON = (json) => {
+//   const str = typeof json === 'string' ? json : JSON.stringify(json, null, 2)
+//   return str.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, (m) => {
+//     let cls = 'json-num'; if (/^"/.test(m)) cls = /:$/.test(m) ? 'json-key' : 'json-string'
+//     return `<span class="${cls}">${m}</span>`
+//   })
+// }
+
 const colorizeJSON = (json) => {
-  const str = typeof json === 'string' ? json : JSON.stringify(json, null, 2)
+  let str = typeof json === 'string' ? json : JSON.stringify(json, null, 2)
+  
+  // 【关键改动】：先转义尖括号和与号，防止 Vue 的 v-html 把它当成真 HTML 标签给渲染没了
+  str = str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  
   return str.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, (m) => {
     let cls = 'json-num'; if (/^"/.test(m)) cls = /:$/.test(m) ? 'json-key' : 'json-string'
     return `<span class="${cls}">${m}</span>`

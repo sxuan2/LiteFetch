@@ -20,7 +20,6 @@
     .section { background: var(--sidebar); border: 1px solid var(--border); border-radius: 6px; padding: 15px; margin-bottom: 20px; }
     .row { display: flex; align-items: center; margin-bottom: 12px; gap: 15px; }
     
-    /* 修复点 1：使用直接子代选择器，防止污染内部的 label */
     .row > label { width: 130px; font-weight: bold; font-size: 14px; flex-shrink: 0; }
     
     input[type="text"], input[type="number"], input[type="time"], select {
@@ -37,7 +36,6 @@
     button.danger { background: #ea2027; color: #fff; border: none; }
     .toggle-container { display: flex; align-items: center; gap: 10px; }
     
-    /* 修复点 2：强制锁定开关尺寸，防止被 Flexbox 拉伸 */
     .switch { position: relative; display: inline-block; width: 40px !important; height: 20px; flex-shrink: 0; }
     .switch input { opacity: 0; width: 0; height: 0; }
     .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #414243; transition: .4s; border-radius: 20px; }
@@ -45,7 +43,7 @@
     input:checked + .slider { background-color: var(--primary); }
     input:checked + .slider:before { transform: translateX(20px); }
 
-    .file-list { max-height: 250px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
+    .file-list { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
     .file-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid var(--border); background: #1e1e1e; font-size: 13px; }
     .file-item:last-child { border-bottom: none; }
     .file-info { display: flex; flex-direction: column; gap: 4px; }
@@ -57,7 +55,7 @@
   </style>
 </head>
 <body>
-  <h2>⚙️ Backup Settings</h2>
+  <h2>Backup Settings</h2>
   <div class="section">
     <div class="row">
       <label>Auto Backup</label>
@@ -88,16 +86,23 @@
         <option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
       </select>
     </div>
-    <div class="row">
-      <label>Backup Time</label>
-      <input type="time" id="time" value="02:00">
+    
+    <div class="row" style="align-items: flex-start;">
+      <label style="margin-top: 6px;">Backup Times</label>
+      <div style="flex: 1;">
+        <div id="times-container" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px;"></div>
+        <button id="btn-add-time" style="font-size: 12px; padding: 4px 8px;">+ Add Time</button>
+      </div>
     </div>
+
     <div class="row">
-      <label>Keep Backups (Days)</label>
+      <label>Keep # of Days</label>
       <input type="number" id="maxDays" min="1" max="365" value="30">
     </div>
     <div style="display: flex; gap: 10px; margin-top: 20px;">
-      <button class="primary" id="btn-save">Save Config</button>
+      <button class="primary" id="btn-save">
+        Save Config
+      </button>
       <button id="btn-backup-now">Backup Now</button>
       <span class="status" id="save-status">Saved!</span>
     </div>
@@ -116,6 +121,27 @@
     const formatSize = (bytes) => { if (bytes === 0) return '0 B'; const k = 1024, sizes = ['B', 'KB', 'MB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]; }
     const formatDate = (ms) => new Date(ms).toLocaleString();
 
+    let currentTimes = ['02:00'];
+
+    // 渲染动态时间列表
+    function renderTimes() {
+      const container = el('times-container');
+      container.innerHTML = currentTimes.map((t, i) => `
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input type="time" value="${t}" onchange="updateTime(${i}, this.value)">
+          ${currentTimes.length > 1 ? `<button class="danger" style="padding: 4px 8px;" onclick="removeTime(${i})">X</button>` : ''}
+        </div>
+      `).join('');
+      // 限制最多添加 10 个时间点
+      el('btn-add-time').style.display = currentTimes.length >= 10 ? 'none' : 'inline-block';
+    }
+
+    window.updateTime = (index, val) => { currentTimes[index] = val; };
+    window.removeTime = (index) => { currentTimes.splice(index, 1); renderTimes(); };
+    el('btn-add-time').addEventListener('click', () => {
+       if(currentTimes.length < 10) { currentTimes.push('12:00'); renderTimes(); }
+    });
+
     async function loadConfig() {
       const config = await ipc.invoke('backup-get-config');
       el('enabled').checked = config.enabled;
@@ -123,9 +149,16 @@
       el('folder').value = config.folder || '';
       el('frequency').value = config.frequency;
       el('dayOfWeek').value = config.dayOfWeek;
-      el('time').value = config.time;
       el('maxDays').value = config.maxDays;
       el('row-day').style.display = config.frequency === 'weekly' ? 'flex' : 'none';
+      
+      // 加载数组时间
+      if (config.times && config.times.length > 0) {
+        currentTimes = config.times;
+      } else if (config.time) { // 兼容老数据
+        currentTimes = [config.time];
+      }
+      renderTimes();
     }
 
     async function loadFiles() {
@@ -154,9 +187,16 @@
     el('btn-browse').addEventListener('click', async () => { const folder = await ipc.invoke('backup-select-folder'); if (folder) el('folder').value = folder; });
 
     el('btn-save').addEventListener('click', async () => {
+      // 过滤掉可能存在的空值，并去重
+      const validTimes = [...new Set(currentTimes.filter(t => t))].sort();
+      
       const config = {
-        enabled: el('enabled').checked, folder: el('folder').value, frequency: el('frequency').value,
-        dayOfWeek: parseInt(el('dayOfWeek').value), time: el('time').value, maxDays: parseInt(el('maxDays').value)
+        enabled: el('enabled').checked, 
+        folder: el('folder').value, 
+        frequency: el('frequency').value,
+        dayOfWeek: parseInt(el('dayOfWeek').value), 
+        times: validTimes, // 保存数组而不是单个字符串
+        maxDays: parseInt(el('maxDays').value)
       };
       await ipc.invoke('backup-save-config', config);
       const status = el('save-status'); status.style.display = 'inline-block'; status.innerText = 'Config Saved!';
