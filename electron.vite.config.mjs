@@ -11,6 +11,14 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
-    plugins: [vue()]
+    plugins: [vue()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/renderer/index.html'),
+          backup: resolve(__dirname, 'src/renderer/backup.html')
+        }
+      }
+    }
   }
 })

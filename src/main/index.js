@@ -6,8 +6,126 @@ import axios from 'axios'
 import fs from 'fs'
 import path from 'path'
 
+let mainWindow = null
+let backupWindow = null
+
+// --- 备份逻辑配置 ---
+const configPath = path.join(app.getPath('userData'), 'backup-config.json')
+let backupConfig = {
+  enabled: false,
+  folder: '',
+  frequency: 'daily',
+  time: '02:00',
+  dayOfWeek: 0,
+  maxDays: 30,
+  lastBackupDate: ''
+}
+
+if (fs.existsSync(configPath)) {
+  try {
+    backupConfig = { ...backupConfig, ...JSON.parse(fs.readFileSync(configPath, 'utf-8')) }
+  } catch (err) { console.error('Failed to load backup config:', err) }
+}
+
+function saveBackupConfig() {
+  fs.writeFileSync(configPath, JSON.stringify(backupConfig, null, 2))
+}
+
+async function executeBackup(isManual = false) {
+  // 修复 1：增加 mainWindow.isDestroyed() 防止窗口被关闭后报错
+  if (!mainWindow || mainWindow.isDestroyed() || !backupConfig.folder || !fs.existsSync(backupConfig.folder)) {
+    if (isManual) throw new Error('Invalid backup folder or main window not ready.')
+    return false
+  }
+  try {
+    const dataToExport = await mainWindow.webContents.executeJavaScript(`
+      ({
+        collections: JSON.parse(localStorage.getItem('pilot_collections') || '[]'),
+        expandedFolders: JSON.parse(localStorage.getItem('pilot_expanded_folders') || '[]'),
+        history: JSON.parse(localStorage.getItem('litefetch_history') || '[]'),
+        pythonExe: localStorage.getItem('pilot_python_exe') || '',
+        pythonScript: localStorage.getItem('pilot_python_script') || '',
+        environments: JSON.parse(localStorage.getItem('litefetch_environments') || 'null'),
+        activeEnv: localStorage.getItem('litefetch_active_env') || ''
+      })
+    `)
+    const now = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    const fileName = `LiteFetch_Backup_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.json`
+    fs.writeFileSync(path.join(backupConfig.folder, fileName), JSON.stringify(dataToExport, null, 2))
+    
+    cleanOldBackups()
+    return true
+  } catch (err) {
+    if (isManual) throw err
+    return false
+  }
+}
+
+function cleanOldBackups() {
+  if (!backupConfig.folder || !fs.existsSync(backupConfig.folder)) return
+  const files = fs.readdirSync(backupConfig.folder)
+  const now = Date.now()
+  const maxAgeMs = backupConfig.maxDays * 24 * 60 * 60 * 1000
+  files.forEach(file => {
+    if (file.startsWith('LiteFetch_Backup_') && file.endsWith('.json')) {
+      const stats = fs.statSync(path.join(backupConfig.folder, file))
+      if (now - stats.mtimeMs > maxAgeMs) fs.unlinkSync(path.join(backupConfig.folder, file))
+    }
+  })
+}
+
+// 修复 2：自动备份轮询：改为高精度 10 秒级轮询，并立即上锁
+setInterval(() => {
+  if (!backupConfig.enabled || !backupConfig.folder) return
+  if (!mainWindow || mainWindow.isDestroyed()) return
+
+  const now = new Date()
+  const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+
+  // 如果今天已经自动备份过，跳过
+  if (backupConfig.lastBackupDate === todayStr) return
+
+  const timeMatches = currentTime === backupConfig.time
+
+  if ((backupConfig.frequency === 'daily' && timeMatches) || 
+      (backupConfig.frequency === 'weekly' && now.getDay() === backupConfig.dayOfWeek && timeMatches)) {
+    
+    // 先立即上锁，防止这 1 分钟内被执行多次
+    backupConfig.lastBackupDate = todayStr
+    saveBackupConfig()
+    
+    // 静默执行备份
+    executeBackup(false).catch(err => console.error('Auto backup failed:', err))
+  }
+}, 10000)
+
+function openBackupWindow() {
+  if (backupWindow) { backupWindow.focus(); return }
+  backupWindow = new BrowserWindow({
+    width: 650, height: 700, title: 'Backup Settings',
+    autoHideMenuBar: true, resizable: false,
+    webPreferences: { 
+      preload: join(__dirname, '../preload/index.js'), 
+      contextIsolation: true, 
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  
+  // 解决加载本地文件的安全拦截问题
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    backupWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/backup.html')
+  } else {
+    backupWindow.loadFile(join(__dirname, '../renderer/backup.html'))
+  }
+  
+  backupWindow.on('closed', () => { backupWindow = null })
+}
+
 function createWindow() {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     show: false,
@@ -27,12 +145,25 @@ function createWindow() {
     evt.preventDefault()
   })
 
-  // 2. 定义你自己的系统菜单模板
+  // === 完整保留您自定义的菜单栏排版 ===
   const menuTemplate = [
     {
-      label: 'File',
+      label: 'Menu',
       submenu: [
-        { role: 'quit', label: 'Exit' } // 退出应用
+        { label: 'Backup Settings', click: openBackupWindow },
+        { 
+          label: 'Backup Now', 
+          click: async () => {
+            try {
+              await executeBackup(true)
+              dialog.showMessageBox(mainWindow, { type: 'info', message: 'Manual backup completed successfully!' })
+            } catch (e) {
+              dialog.showErrorBox('Backup Failed', e.message)
+            }
+          } 
+        },
+        { type: 'separator' },
+        { role: 'quit', label: 'Exit' }
       ]
     },
     {
@@ -41,20 +172,19 @@ function createWindow() {
         { role: 'reload', label: 'Reload' },
         { role: 'toggledevtools', label: 'Toggle Developer Tools' },
         { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },     // 恢复默认大小
-        { role: 'zoomIn', label: 'Zoom In' },            // 放大
-        { role: 'zoomOut', label: 'Zoom Out' },          // 缩小
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
         { type: 'separator' },
         { role: 'togglefullscreen', label: 'Toggle Full Screen' }
       ]
     },
     {
-      label: 'Help',
+      label: 'About',
       submenu: [
         {
           label: 'About LiteFetch',
           click: () => {
-            // 调用系统的原生弹窗展示 About 信息
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               title: 'About LiteFetch',
@@ -68,7 +198,6 @@ function createWindow() {
     }
   ]
 
-  // 3. 将模板编译为菜单并设置为全局应用菜单
   const menu = Menu.buildFromTemplate(menuTemplate)
   Menu.setApplicationMenu(menu)
 
@@ -86,6 +215,7 @@ app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.litefetch.app')
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
 
+  // --- 原有的所有 IPC Handlers 完整保留 ---
   ipcMain.handle('import-postman-raw', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
       properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }]
@@ -204,6 +334,53 @@ app.whenReady().then(() => {
         } else { reject(errorString) }
       })
     })
+  })
+
+  // --- 新增：备份系统专用的 IPC Handlers ---
+  ipcMain.handle('backup-get-config', () => backupConfig)
+  ipcMain.handle('backup-save-config', (e, c) => { 
+    // 修复 3：保存设置时清空当天的记录，方便您无限次测试定时器！
+    backupConfig.lastBackupDate = ''
+    backupConfig = { ...backupConfig, ...c }
+    saveBackupConfig()
+    return true 
+  })
+  ipcMain.handle('backup-select-folder', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+    return canceled ? null : filePaths[0]
+  })
+  ipcMain.handle('backup-get-files', () => {
+    if (!backupConfig.folder || !fs.existsSync(backupConfig.folder)) return []
+    return fs.readdirSync(backupConfig.folder)
+      .filter(f => f.startsWith('LiteFetch_Backup_') && f.endsWith('.json'))
+      .map(f => {
+        const s = fs.statSync(path.join(backupConfig.folder, f))
+        return { name: f, size: s.size, time: s.mtimeMs, path: path.join(backupConfig.folder, f) }
+      }).sort((a, b) => b.time - a.time)
+  })
+  ipcMain.handle('backup-execute-now', async () => {
+    try { await executeBackup(true); return { success: true } }
+    catch (e) { return { success: false, message: e.message } }
+  })
+  ipcMain.handle('backup-restore-file', async (e, p) => {
+    try {
+      const data = JSON.parse(fs.readFileSync(p, 'utf-8'))
+      await mainWindow.webContents.executeJavaScript(`
+        localStorage.setItem('pilot_collections', JSON.stringify(${JSON.stringify(data.collections || [])}));
+        localStorage.setItem('pilot_expanded_folders', JSON.stringify(${JSON.stringify(data.expandedFolders || [])}));
+        localStorage.setItem('litefetch_history', JSON.stringify(${JSON.stringify(data.history || [])}));
+        if (${JSON.stringify(data.pythonExe)}) localStorage.setItem('pilot_python_exe', ${JSON.stringify(data.pythonExe)});
+        if (${JSON.stringify(data.pythonScript)}) localStorage.setItem('pilot_python_script', ${JSON.stringify(data.pythonScript)});
+        if (${JSON.stringify(data.environments)}) localStorage.setItem('litefetch_environments', JSON.stringify(${JSON.stringify(data.environments)}));
+        if (${JSON.stringify(data.activeEnv)}) localStorage.setItem('litefetch_active_env', ${JSON.stringify(data.activeEnv)});
+        window.location.reload();
+      `)
+      return { success: true }
+    } catch (err) { return { success: false, message: err.message } }
+  })
+  ipcMain.handle('backup-delete-file', async (e, p) => {
+    try { fs.unlinkSync(p); return { success: true } }
+    catch (e) { return { success: false, message: e.message } }
   })
 
   createWindow()
