@@ -1,45 +1,40 @@
 name: Build LiteFetch
 
-# 当代码推送到 main 分支时触发构建
 on:
   push:
     branches:
       - main
-  # 允许您在 GitHub 网页上直接手动点击运行
   workflow_dispatch:
 
 jobs:
   build:
-    # 定义矩阵，一次性启动三台不同系统的云电脑
     runs-on: ${{ matrix.os }}
     strategy:
+      # 关闭连坐机制：任何一个系统打包失败，都不会影响另外两个系统继续打包
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
 
     steps:
-      # 1. 把您的代码拉取到云电脑上
       - name: Check out Git repository
         uses: actions/checkout@v4
 
-      # 2. 安装 Node.js 环境
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
 
-      # 3. 安装项目依赖
       - name: Install Dependencies
         run: npm install
 
-      # 4. 执行构建与打包 (electron-builder 会自动识别当前系统并打出对应的包)
+      # 核心修复：加上 --publish never，并注入 GitHub 内置的 Token
       - name: Build and Package Electron App
-        run: npm run build && npx electron-builder --${{ matrix.os == 'windows-latest' && 'win' || matrix.os == 'macos-latest' && 'mac' || 'linux' }}
+        run: npm run build && npx electron-builder --${{ matrix.os == 'windows-latest' && 'win' || matrix.os == 'macos-latest' && 'mac' || 'linux' }} --publish never
         env:
-          # 用于在 macOS 上绕过一些必须签名的限制（如果您没有苹果开发者账号）
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
           
-      # 5. 将打包好的文件上传到 GitHub Actions 的控制台供您下载
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
