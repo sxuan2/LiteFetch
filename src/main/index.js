@@ -12,6 +12,18 @@ let isBackingUp = false
 let tray = null
 let isQuitting = false
 
+// --- 新增：精准获取图标绝对物理路径的函数 ---
+function getIconPath() {
+  if (app.isPackaged) {
+    // 生产环境：基于你 package.json 中 extraResources 的输出行为
+    // process.resourcesPath 就是 win-unpacked/resources 目录
+    return path.join(process.resourcesPath, 'icon.png')
+  } else {
+    // 开发环境：相对于 out/main/index.js 回退到项目根目录下的 resources
+    return path.join(__dirname, '../../resources/icon.png')
+  }
+}
+
 // --- 备份逻辑配置 ---
 const configPath = path.join(app.getPath('userData'), 'backup-config.json')
 let backupConfig = {
@@ -156,7 +168,8 @@ function openBackupWindow() {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400, height: 900, show: false,
-    title: 'LiteFetch', icon: 'resources/icon.png',
+    title: 'LiteFetch', 
+    icon: getIconPath(), // ✅ 修复：使用动态计算的绝对路径
     autoHideMenuBar: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -244,9 +257,9 @@ function createWindow() {
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.litefetch.app')
+  
   // --- 初始化系统托盘 (Tray) ---
-  // 注意：这里的路径请保持和 createWindow 里 mainWindow 的 icon 路径一致
-  tray = new Tray('resources/icon.png') 
+  tray = new Tray(getIconPath()) // the icon path
   
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Open LiteFetch', click: () => mainWindow.show() },
