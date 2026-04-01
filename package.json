@@ -44,12 +44,18 @@
   "build": {
     "appId": "com.litefetch.app",
     "productName": "LiteFetch",
-    "asar": true,
+    "asar": false,
     "directories": {
       "output": "release/${version}"
     },
     "files": [
       "out"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "../resources"
+      }
     ],
     "win": {
       "icon": "resources/icon.ico",

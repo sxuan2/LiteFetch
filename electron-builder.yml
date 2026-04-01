@@ -4,13 +4,13 @@ directories:
   buildResources: build
   output: release
 files:
+  - resources/** # 显式包含 resources 文件夹
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-asarUnpack:
-  - resources/**
+asar: false
 win:
   target:
     - nsis
