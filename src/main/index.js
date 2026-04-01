@@ -12,14 +12,11 @@ let isBackingUp = false
 let tray = null
 let isQuitting = false
 
-// --- 新增：精准获取图标绝对物理路径的函数 ---
+// --- 精准获取图标绝对物理路径的函数 ---
 function getIconPath() {
   if (app.isPackaged) {
-    // 生产环境：基于你 package.json 中 extraResources 的输出行为
-    // process.resourcesPath 就是 win-unpacked/resources 目录
     return path.join(process.resourcesPath, 'icon.png')
   } else {
-    // 开发环境：相对于 out/main/index.js 回退到项目根目录下的 resources
     return path.join(__dirname, '../../resources/icon.png')
   }
 }
@@ -30,17 +27,16 @@ let backupConfig = {
   enabled: false,
   folder: '',
   frequency: 'daily',
-  times: ['02:00'], // 【改动1】变成数组，支持多个时间点
+  times: ['02:00'],
   dayOfWeek: 0,
   maxDays: 30,
-  executed: { date: '', points: [] } // 【改动2】防重锁升级：记录今天已经执行过的时间点
+  executed: { date: '', points: [] } 
 }
 
 // 兼容老版本配置的加载
 if (fs.existsSync(configPath)) {
   try {
     const loaded = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
-    // 兼容迁移：把老的 time 字符串转成 times 数组
     if (loaded.time && !loaded.times) loaded.times = [loaded.time]
     backupConfig = { ...backupConfig, ...loaded }
     if (!backupConfig.executed) backupConfig.executed = { date: '', points: [] }
@@ -102,30 +98,26 @@ setInterval(() => {
   const now = new Date()
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 
-  // 1. 如果新的一天开始了，清空昨天的防重锁记录
   if (backupConfig.executed.date !== todayStr) {
     backupConfig.executed = { date: todayStr, points: [] }
     saveBackupConfig()
   }
 
-  // 2. 检查频率是否符合
   const isDaily = backupConfig.frequency === 'daily'
   const isWeekly = backupConfig.frequency === 'weekly' && now.getDay() === Number(backupConfig.dayOfWeek)
   if (!isDaily && !isWeekly) return
 
-  // 3. 遍历用户设定的所有时间点，寻找可以触发的目标
   let pendingTimePoint = null
   for (const t of backupConfig.times) {
-    if (backupConfig.executed.points.includes(t)) continue // 这个时间点今天已经备过了，跳过
+    if (backupConfig.executed.points.includes(t)) continue 
 
     const timeParts = t.split(':')
     if (timeParts.length !== 2) continue
     const targetTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(timeParts[0], 10), parseInt(timeParts[1], 10), 0, 0)
 
-    // 只要当前时间 >= 设定的时间，就可以触发
     if (now.getTime() >= targetTime.getTime()) {
       pendingTimePoint = t
-      break // 每次轮询最多只触发一个时间点，防止高并发卡死
+      break 
     }
   }
 
@@ -134,7 +126,6 @@ setInterval(() => {
     executeBackup(false).then((success) => {
       isBackingUp = false
       if (success) {
-        // 4. 成功落盘后，将该时间点记入今天的已完成名单
         backupConfig.executed.points.push(pendingTimePoint)
         saveBackupConfig()
       }
@@ -169,7 +160,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400, height: 900, show: false,
     title: 'LiteFetch', 
-    icon: getIconPath(), // ✅ 修复：使用动态计算的绝对路径
+    icon: getIconPath(), 
     autoHideMenuBar: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -180,8 +171,8 @@ function createWindow() {
 
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
-      event.preventDefault() // 阻止默认的彻底销毁行为
-      mainWindow.hide()      // 仅仅隐藏窗口，让备份在后台继续跑
+      event.preventDefault() 
+      mainWindow.hide()      
     }
   })
 
@@ -207,8 +198,8 @@ function createWindow() {
         { 
           label: 'Exit', 
           click: () => { 
-            isQuitting = true // 解除拦截锁
-            app.quit()        // 彻底退出程序
+            isQuitting = true 
+            app.quit()        
           } 
         }
       ]
@@ -255,182 +246,198 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.litefetch.app')
-  
-  // --- 初始化系统托盘 (Tray) ---
-  tray = new Tray(getIconPath()) // the icon path
-  
-  const contextMenu = Menu.buildFromTemplate([
-    { label: 'Open LiteFetch', click: () => mainWindow.show() },
-    { type: 'separator' },
-    { label: 'Backup Settings', click: openBackupWindow },
-    { label: 'Backup Now', click: async () => {
-        try { await executeBackup(true); dialog.showMessageBox({ type: 'info', message: 'Manual backup completed successfully!' }) } 
-        catch (e) { dialog.showErrorBox('Backup Failed', e.message) }
-      } 
-    },
-    { type: 'separator' },
-    { label: 'Quit LiteFetch', click: () => { isQuitting = true; app.quit() } }
-  ])
-  
-  tray.setToolTip('LiteFetch is running in the background')
-  tray.setContextMenu(contextMenu)
-  
-  // 鼠标双击托盘图标，直接恢复显示主窗口
-  tray.on('double-click', () => {
-    mainWindow.show()
-  })
-  
-  app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
+// ==========================================
+// 【核心改动区域】：单例锁拦截 (Single Instance Lock)
+// ==========================================
+const gotTheLock = app.requestSingleInstanceLock()
 
-  ipcMain.handle('import-postman-raw', async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] })
-    if (canceled || filePaths.length === 0) return null
-    try { return JSON.parse(fs.readFileSync(filePaths[0], 'utf-8')) } catch { throw new Error('Invalid JSON format in selected Postman file.') }
-  })
-  ipcMain.handle('open-external', async (event, url) => {
-    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false
-    await shell.openExternal(url); return true
-  })
-  ipcMain.handle('http-request', async (event, config = {}) => {
-    const { method = 'GET', url = '', headers = {}, data, timeout = 15000 } = config
-    try {
-      // 【关键修复 1】: responseType: 'arraybuffer' 强制接收原始二进制流，保护图片不被破坏
-      const res = await axios({ method, url, headers, data, timeout, responseType: 'arraybuffer' })
-      
-      const contentType = (res.headers['content-type'] || '').toLowerCase()
-      let processedData = res.data
+if (!gotTheLock) {
+  // 如果没拿到锁，说明这是第 n 次启动 (n>1)，直接退出当前试图新开的进程
+  app.quit()
+} else {
+  // 拿到锁，说明这是首个实例，正常执行后续的事件注册和启动逻辑
 
-      // 【关键修复 2】: 拿到数据后，根据 Headers 里的类型进行分发处理
-      if (contentType.startsWith('image/')) {
-        // 如果是图片，把二进制转成前端 <img src="..."> 能直接渲染的 Base64 格式
-        const base64 = Buffer.from(res.data).toString('base64')
-        processedData = `data:${contentType};base64,${base64}`
-      } else {
-        // 如果是普通文本或 JSON，转换回 utf8 字符串，并尝试解析 JSON
-        processedData = res.data.toString('utf8')
-        try { processedData = JSON.parse(processedData) } catch (e) {}
-      }
+  // 监听从系统传来的试图启动第二个实例的事件
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    if (mainWindow) {
+      // 如果主窗口被最小化了，恢复它
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      // 如果主窗口被彻底隐藏到了托盘，将其显示出来
+      if (!mainWindow.isVisible()) mainWindow.show()
+      // 强制将窗口置顶并聚焦
+      mainWindow.focus()
+    }
+  })
 
-      return {
-        ok: true,
-        status: res.status,
-        statusText: res.statusText,
-        headers: res.headers || {},
-        data: processedData
-      }
-    } catch (err) {
-      if (err.response) {
-        const contentType = (err.response.headers['content-type'] || '').toLowerCase()
-        let processedErrData = err.response.data
+  app.whenReady().then(() => {
+    electronApp.setAppUserModelId('com.litefetch.app')
+    
+    tray = new Tray(getIconPath()) 
+    
+    const contextMenu = Menu.buildFromTemplate([
+      { label: 'Open LiteFetch', click: () => mainWindow.show() },
+      { type: 'separator' },
+      { label: 'Backup Settings', click: openBackupWindow },
+      { label: 'Backup Now', click: async () => {
+          try { await executeBackup(true); dialog.showMessageBox({ type: 'info', message: 'Manual backup completed successfully!' }) } 
+          catch (e) { dialog.showErrorBox('Backup Failed', e.message) }
+        } 
+      },
+      { type: 'separator' },
+      { label: 'Quit LiteFetch', click: () => { isQuitting = true; app.quit() } }
+    ])
+    
+    tray.setToolTip('LiteFetch is running in the background')
+    tray.setContextMenu(contextMenu)
+    
+    tray.on('double-click', () => {
+      mainWindow.show()
+    })
+    
+    app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
+
+    ipcMain.handle('import-postman-raw', async () => {
+      const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] })
+      if (canceled || filePaths.length === 0) return null
+      try { return JSON.parse(fs.readFileSync(filePaths[0], 'utf-8')) } catch { throw new Error('Invalid JSON format in selected Postman file.') }
+    })
+    ipcMain.handle('open-external', async (event, url) => {
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false
+      await shell.openExternal(url); return true
+    })
+    ipcMain.handle('http-request', async (event, config = {}) => {
+      const { method = 'GET', url = '', headers = {}, data, timeout = 15000 } = config
+      try {
+        const res = await axios({ method, url, headers, data, timeout, responseType: 'arraybuffer' })
         
+        const contentType = (res.headers['content-type'] || '').toLowerCase()
+        let processedData = res.data
+
         if (contentType.startsWith('image/')) {
-          const base64 = Buffer.from(err.response.data).toString('base64')
-          processedErrData = `data:${contentType};base64,${base64}`
+          const base64 = Buffer.from(res.data).toString('base64')
+          processedData = `data:${contentType};base64,${base64}`
         } else {
-          processedErrData = err.response.data ? err.response.data.toString('utf8') : ''
-          try { processedErrData = JSON.parse(processedErrData) } catch (e) {}
+          processedData = res.data.toString('utf8')
+          try { processedData = JSON.parse(processedData) } catch (e) {}
         }
 
         return {
-          ok: false,
-          status: err.response.status,
-          statusText: err.response.statusText,
-          headers: err.response.headers || {},
-          data: processedErrData,
-          message: err.message
+          ok: true,
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers || {},
+          data: processedData
         }
-      }
-      return { ok: false, status: 0, statusText: 'ERROR', headers: {}, data: err.message, message: err.message }
-    }
-  })
-  ipcMain.handle('select-file', async (event, filters) => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openFile'], filters: filters })
-    return canceled ? null : filePaths[0]
-  })
-  ipcMain.handle('run-python', async (event, scriptPath, pythonExePath) => {
-    return new Promise((resolve, reject) => {
-      const exePath = (pythonExePath || 'python').trim()
-      const isNamedPython = ['python', 'python3', 'py'].includes(exePath.toLowerCase())
-      if (!isNamedPython && !path.isAbsolute(exePath)) { reject('Invalid python executable path.'); return }
-      if (!isNamedPython) {
-        const ext = path.extname(exePath).toLowerCase()
-        if (!fs.existsSync(exePath) || (process.platform === 'win32' && ext !== '.exe')) { reject('Python executable not found or invalid.'); return }
-      }
-      const absPath = path.isAbsolute(scriptPath) ? scriptPath : path.join(app.getAppPath(), scriptPath)
-      if (!fs.existsSync(absPath)) { reject('Python script file does not exist.'); return }
+      } catch (err) {
+        if (err.response) {
+          const contentType = (err.response.headers['content-type'] || '').toLowerCase()
+          let processedErrData = err.response.data
+          
+          if (contentType.startsWith('image/')) {
+            const base64 = Buffer.from(err.response.data).toString('base64')
+            processedErrData = `data:${contentType};base64,${base64}`
+          } else {
+            processedErrData = err.response.data ? err.response.data.toString('utf8') : ''
+            try { processedErrData = JSON.parse(processedErrData) } catch (e) {}
+          }
 
-      const python = spawn(exePath, [absPath])
-      const MAX_OUTPUT_BYTES = 1024 * 1024
-      const TIMEOUT_MS = 30_000
-      let settled = false; let dataString = ''; let errorString = ''
-      const timeout = setTimeout(() => { if (settled) return; settled = true; python.kill(); reject(`Python script timed out after ${TIMEOUT_MS / 1000}s.`) }, TIMEOUT_MS)
+          return {
+            ok: false,
+            status: err.response.status,
+            statusText: err.response.statusText,
+            headers: err.response.headers || {},
+            data: processedErrData,
+            message: err.message
+          }
+        }
+        return { ok: false, status: 0, statusText: 'ERROR', headers: {}, data: err.message, message: err.message }
+      }
+    })
+    ipcMain.handle('select-file', async (event, filters) => {
+      const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openFile'], filters: filters })
+      return canceled ? null : filePaths[0]
+    })
+    ipcMain.handle('run-python', async (event, scriptPath, pythonExePath) => {
+      return new Promise((resolve, reject) => {
+        const exePath = (pythonExePath || 'python').trim()
+        const isNamedPython = ['python', 'python3', 'py'].includes(exePath.toLowerCase())
+        if (!isNamedPython && !path.isAbsolute(exePath)) { reject('Invalid python executable path.'); return }
+        if (!isNamedPython) {
+          const ext = path.extname(exePath).toLowerCase()
+          if (!fs.existsSync(exePath) || (process.platform === 'win32' && ext !== '.exe')) { reject('Python executable not found or invalid.'); return }
+        }
+        const absPath = path.isAbsolute(scriptPath) ? scriptPath : path.join(app.getAppPath(), scriptPath)
+        if (!fs.existsSync(absPath)) { reject('Python script file does not exist.'); return }
 
-      python.stdout.on('data', (data) => {
-        if (settled) return; dataString += data.toString()
-        if (Buffer.byteLength(dataString, 'utf8') > MAX_OUTPUT_BYTES) { settled = true; clearTimeout(timeout); python.kill(); reject('Python script output exceeded 1MB limit.') }
-      })
-      python.stderr.on('data', (data) => {
-        if (settled) return; errorString += data.toString()
-        if (Buffer.byteLength(errorString, 'utf8') > MAX_OUTPUT_BYTES) { settled = true; clearTimeout(timeout); python.kill(); reject('Python script error output exceeded 1MB limit.') }
-      })
-      python.on('error', (err) => { if (settled) return; settled = true; clearTimeout(timeout); reject(err.message || 'Failed to launch Python process.') })
-      python.on('close', (code) => {
-        if (settled) return; settled = true; clearTimeout(timeout)
-        if (code === 0) { try { resolve(JSON.parse(dataString.trim())) } catch (e) { reject("Parse Error: " + dataString) } } else { reject(errorString) }
+        const python = spawn(exePath, [absPath])
+        const MAX_OUTPUT_BYTES = 1024 * 1024
+        const TIMEOUT_MS = 30_000
+        let settled = false; let dataString = ''; let errorString = ''
+        const timeout = setTimeout(() => { if (settled) return; settled = true; python.kill(); reject(`Python script timed out after ${TIMEOUT_MS / 1000}s.`) }, TIMEOUT_MS)
+
+        python.stdout.on('data', (data) => {
+          if (settled) return; dataString += data.toString()
+          if (Buffer.byteLength(dataString, 'utf8') > MAX_OUTPUT_BYTES) { settled = true; clearTimeout(timeout); python.kill(); reject('Python script output exceeded 1MB limit.') }
+        })
+        python.stderr.on('data', (data) => {
+          if (settled) return; errorString += data.toString()
+          if (Buffer.byteLength(errorString, 'utf8') > MAX_OUTPUT_BYTES) { settled = true; clearTimeout(timeout); python.kill(); reject('Python script error output exceeded 1MB limit.') }
+        })
+        python.on('error', (err) => { if (settled) return; settled = true; clearTimeout(timeout); reject(err.message || 'Failed to launch Python process.') })
+        python.on('close', (code) => {
+          if (settled) return; settled = true; clearTimeout(timeout)
+          if (code === 0) { try { resolve(JSON.parse(dataString.trim())) } catch (e) { reject("Parse Error: " + dataString) } } else { reject(errorString) }
+        })
       })
     })
+
+    ipcMain.handle('backup-get-config', () => backupConfig)
+    ipcMain.handle('backup-save-config', (e, c) => { 
+      backupConfig = { ...backupConfig, ...c }
+      backupConfig.executed = { date: '', points: [] } 
+      saveBackupConfig()
+      return true 
+    })
+    ipcMain.handle('backup-select-folder', async () => {
+      const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+      return canceled ? null : filePaths[0]
+    })
+    ipcMain.handle('backup-get-files', () => {
+      if (!backupConfig.folder || !fs.existsSync(backupConfig.folder)) return []
+      return fs.readdirSync(backupConfig.folder)
+        .filter(f => f.startsWith('LiteFetch_Backup_') && f.endsWith('.json'))
+        .map(f => {
+          const s = fs.statSync(path.join(backupConfig.folder, f))
+          return { name: f, size: s.size, time: s.mtimeMs, path: path.join(backupConfig.folder, f) }
+        }).sort((a, b) => b.time - a.time)
+    })
+    ipcMain.handle('backup-execute-now', async () => {
+      try { await executeBackup(true); return { success: true } }
+      catch (e) { return { success: false, message: e.message } }
+    })
+    ipcMain.handle('backup-restore-file', async (e, p) => {
+      try {
+        const data = JSON.parse(fs.readFileSync(p, 'utf-8'))
+        await mainWindow.webContents.executeJavaScript(`
+          localStorage.setItem('pilot_collections', JSON.stringify(${JSON.stringify(data.collections || [])}));
+          localStorage.setItem('pilot_expanded_folders', JSON.stringify(${JSON.stringify(data.expandedFolders || [])}));
+          localStorage.setItem('litefetch_history', JSON.stringify(${JSON.stringify(data.history || [])}));
+          if (${JSON.stringify(data.pythonExe)}) localStorage.setItem('pilot_python_exe', ${JSON.stringify(data.pythonExe)});
+          if (${JSON.stringify(data.pythonScript)}) localStorage.setItem('pilot_python_script', ${JSON.stringify(data.pythonScript)});
+          if (${JSON.stringify(data.environments)}) localStorage.setItem('litefetch_environments', JSON.stringify(${JSON.stringify(data.environments)}));
+          if (${JSON.stringify(data.activeEnv)}) localStorage.setItem('litefetch_active_env', ${JSON.stringify(data.activeEnv)});
+          window.location.reload();
+        `)
+        return { success: true }
+      } catch (err) { return { success: false, message: err.message } }
+    })
+    ipcMain.handle('backup-delete-file', async (e, p) => {
+      try { fs.unlinkSync(p); return { success: true } }
+      catch (e) { return { success: false, message: e.message } }
+    })
+
+    createWindow()
   })
 
-  // --- 备份系统专用的 IPC Handlers ---
-  ipcMain.handle('backup-get-config', () => backupConfig)
-  ipcMain.handle('backup-save-config', (e, c) => { 
-    backupConfig = { ...backupConfig, ...c }
-    // 重置今天的组合锁状态，方便您无论怎么改时间都能立即测试
-    backupConfig.executed = { date: '', points: [] } 
-    saveBackupConfig()
-    return true 
-  })
-  ipcMain.handle('backup-select-folder', async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
-    return canceled ? null : filePaths[0]
-  })
-  ipcMain.handle('backup-get-files', () => {
-    if (!backupConfig.folder || !fs.existsSync(backupConfig.folder)) return []
-    return fs.readdirSync(backupConfig.folder)
-      .filter(f => f.startsWith('LiteFetch_Backup_') && f.endsWith('.json'))
-      .map(f => {
-        const s = fs.statSync(path.join(backupConfig.folder, f))
-        return { name: f, size: s.size, time: s.mtimeMs, path: path.join(backupConfig.folder, f) }
-      }).sort((a, b) => b.time - a.time)
-  })
-  ipcMain.handle('backup-execute-now', async () => {
-    try { await executeBackup(true); return { success: true } }
-    catch (e) { return { success: false, message: e.message } }
-  })
-  ipcMain.handle('backup-restore-file', async (e, p) => {
-    try {
-      const data = JSON.parse(fs.readFileSync(p, 'utf-8'))
-      await mainWindow.webContents.executeJavaScript(`
-        localStorage.setItem('pilot_collections', JSON.stringify(${JSON.stringify(data.collections || [])}));
-        localStorage.setItem('pilot_expanded_folders', JSON.stringify(${JSON.stringify(data.expandedFolders || [])}));
-        localStorage.setItem('litefetch_history', JSON.stringify(${JSON.stringify(data.history || [])}));
-        if (${JSON.stringify(data.pythonExe)}) localStorage.setItem('pilot_python_exe', ${JSON.stringify(data.pythonExe)});
-        if (${JSON.stringify(data.pythonScript)}) localStorage.setItem('pilot_python_script', ${JSON.stringify(data.pythonScript)});
-        if (${JSON.stringify(data.environments)}) localStorage.setItem('litefetch_environments', JSON.stringify(${JSON.stringify(data.environments)}));
-        if (${JSON.stringify(data.activeEnv)}) localStorage.setItem('litefetch_active_env', ${JSON.stringify(data.activeEnv)});
-        window.location.reload();
-      `)
-      return { success: true }
-    } catch (err) { return { success: false, message: err.message } }
-  })
-  ipcMain.handle('backup-delete-file', async (e, p) => {
-    try { fs.unlinkSync(p); return { success: true } }
-    catch (e) { return { success: false, message: e.message } }
-  })
-
-  createWindow()
-})
-
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+}
