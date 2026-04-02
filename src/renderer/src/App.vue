@@ -220,7 +220,7 @@
             <el-radio-button value="preview" :disabled="currentRes.previewType === 'none'">Preview</el-radio-button>
           </el-radio-group>
 
-          <el-tag v-if="currentRes.code" :type="currentRes.code.startsWith('2') ? 'success' : 'danger'" effect="dark" size="small">
+          <el-tag v-if="currentRes.code" :type="(currentRes.code || '').toString().startsWith('2') ? 'success' : 'danger'" effect="dark" size="small">
             {{ currentRes.code }}
           </el-tag>
           <el-text v-if="currentRes.time" type="info" size="small" style="margin-left:10px; font-family:monospace;">
@@ -268,7 +268,7 @@
         <div v-for="(h, i) in historyList" :key="i" class="history-item" @click="restoreHistory(h)" title="Click to load this request">
           <el-tag :color="getMethodColor(h.method)" effect="dark" style="border:none; width: 65px; text-align:center; font-weight:bold; flex-shrink: 0;">{{ h.method }}</el-tag>
           <span class="history-url">{{ h.url }}</span>
-          <span class="history-status" :style="{ color: h.statusCode.startsWith('2') ? '#0cbb52' : '#ea2027' }">{{ h.statusCode }}</span>
+          <span class="history-status" :style="{ color: (h.statusCode || '').toString().startsWith('2') ? '#0cbb52' : '#ea2027' }">{{ h.statusCode }}</span>
           <span class="history-time">{{ h.time }}</span>
         </div>
       </div>
@@ -353,16 +353,28 @@ import { useCollectionStore } from './store'
 import SidebarTree from './components/SidebarTree.vue'
 import { marked } from 'marked'
 import axios from 'axios'
+import localforage from 'localforage'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Bottom, Delete, Paperclip, Search, Top } from '@element-plus/icons-vue'
 
 const store = useCollectionStore()
+
+// ================= DATA HEALER: Fix missing legacy fields dynamically =================
+watch(() => store.activeRequest, (req) => {
+  if (req) {
+    if (!req._id) req._id = 'req_' + Math.random().toString(36).substr(2, 9)
+    if (!req.request) req.request = { method: 'GET', url: '', header: [], body: { mode: 'raw', raw: '' } }
+    if (!req.request.header) req.request.header = []
+    if (!req.request.body) req.request.body = { mode: 'raw', raw: '' }
+  }
+}, { immediate: true })
+
 const currentTab = ref('headers')
 const pyStatus = ref('')
 const sidebarWidth = ref(320)
 const responseHeight = ref(300)
 
-// ================= 核心修复：安全隔离的响应缓存池 =================
+// ================= Core Fix: Safely isolated response cache pool =================
 const responseCache = reactive({})
 
 const initCache = (tabId) => {
@@ -399,7 +411,13 @@ const renameDialog = ref({ visible: false, name: '', type: '', item: null })
 const descMode = ref('preview')
 const notesMode = ref('edit')
 const showHistory = ref(false)
-const historyList = ref(JSON.parse(localStorage.getItem('litefetch_history') || '[]'))
+
+// New code: Start with an empty array, then asynchronously load huge history from IndexedDB
+const historyList = ref([])
+localforage.getItem('litefetch_history').then((data) => {
+  if (data) historyList.value = data
+}).catch(err => console.error('Failed to load history:', err))
+
 const dragTab = ref({ sourceId: null, targetId: null, targetSide: 'left', isDragging: false })
 
 const showEnvDialog = ref(false)
@@ -482,9 +500,14 @@ const handleKeydown = (e) => {
 onMounted(() => document.addEventListener('keydown', handleKeydown))
 onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 
+// Calculate safe coordinates to prevent menu from clipping outside the window
 const showTabMenu = (e, tabId) => {
   hideAllMenus()
-  tabCtxMenu.value = { visible: true, x: e.clientX, y: e.clientY, tabId }
+  let menuX = e.clientX
+  let menuY = e.clientY
+  if (window.innerHeight - menuY < 200) menuY = window.innerHeight - 200
+  if (window.innerWidth - menuX < 160) menuX = window.innerWidth - 160
+  tabCtxMenu.value = { visible: true, x: menuX, y: menuY, tabId }
 }
 
 const confirmCloseDirty = async (tabs) => {
@@ -602,13 +625,16 @@ const handleLinkClick = (e) => {
   }
 }
 
+// 👉 Core fix: Package environments into backup
 const exportLiteFetch = () => {
   const dataToExport = {
     collections: JSON.parse(localStorage.getItem('pilot_collections') || '[]'),
     expandedFolders: JSON.parse(localStorage.getItem('pilot_expanded_folders') || '[]'),
     history: JSON.parse(localStorage.getItem('litefetch_history') || '[]'),
     pythonExe: localStorage.getItem('pilot_python_exe') || '',
-    pythonScript: localStorage.getItem('pilot_python_script') || ''
+    pythonScript: localStorage.getItem('pilot_python_script') || '',
+    environments: JSON.parse(localStorage.getItem('litefetch_environments') || 'null'),
+    activeEnvId: localStorage.getItem('litefetch_active_env') || ''
   }
   const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `LiteFetch_Backup_${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url)
@@ -619,13 +645,26 @@ const importLiteFetch = () => {
   const input = document.createElement('input'); input.type = 'file'; input.accept = '.json'
   input.onchange = (e) => {
     const file = e.target.files[0]; if (!file) return
-    const reader = new FileReader(); reader.onload = (ev) => {
+    const reader = new FileReader(); 
+    
+    // 👇 Note: Added async here
+    reader.onload = async (ev) => {
       try {
         const data = JSON.parse(ev.target.result)
         if (!data.collections) return ElMessage.error('Invalid backup file formatting!')
-        localStorage.setItem('pilot_collections', JSON.stringify(data.collections)); localStorage.setItem('pilot_expanded_folders', JSON.stringify(data.expandedFolders || [])); localStorage.setItem('litefetch_history', JSON.stringify(data.history || []))
+        
+        localStorage.setItem('pilot_collections', JSON.stringify(data.collections)); 
+        localStorage.setItem('pilot_expanded_folders', JSON.stringify(data.expandedFolders || [])); 
+        
         if (data.pythonExe) localStorage.setItem('pilot_python_exe', data.pythonExe)
         if (data.pythonScript) localStorage.setItem('pilot_python_script', data.pythonScript)
+        
+        if (data.environments) localStorage.setItem('litefetch_environments', JSON.stringify(data.environments))
+        if (data.activeEnvId) localStorage.setItem('litefetch_active_env', data.activeEnvId)
+        
+        // 👉 Core fix: Use localforage to store history, wait for it to finish
+        await localforage.setItem('litefetch_history', data.history || [])
+        
         ElMessage.success('Data restored! Reloading...'); setTimeout(() => window.location.reload(), 1500)
       } catch (err) { ElMessage.error('Failed to parse backup file.') }
     }
@@ -664,6 +703,7 @@ const importCollection = async () => {
     ElMessage.error(err?.message || 'Failed to parse Postman collection format.')
   }
 }
+
 const selectPython = async (ext) => {
   const path = await window.electron.ipcRenderer.invoke('select-file', [{ name: ext, extensions: [ext] }])
   if (path) { ext === 'exe' ? store.pythonExePath = path : store.pythonScriptPath = path }
@@ -784,21 +824,31 @@ const openCodeGenDialog = () => {
 }
 
 
-// ================= Send Request =================
+// ================= STRICT ASYNC REQUEST SENDER (Ultra-Safe) =================
 const sendRequest = async () => {
   if (store.hasConflict) return ElMessage.error("Please resolve Variable Conflicts first.")
   const req = store.activeRequest; if (!req) return
 
-  const reqId = req._id
+  const reqId = req._id || 'temp_id'
   const cache = initCache(reqId)
 
-  let finalUrl = resolveVars(req.request.url).trim()
-  const method = (req.request.method || 'GET').toUpperCase()
-  const headersObj = {}; ;(req.request.header || []).forEach(h => { if (h.key && h.enabled !== false) headersObj[h.key.trim()] = resolveVars(h.value).trim() })
+  let finalUrl = resolveVars(req.request?.url || '').trim()
+  const method = (req.request?.method || 'GET').toUpperCase()
+  const headersObj = {}; 
+  if (Array.isArray(req.request?.header)) {
+    req.request.header.forEach(h => { 
+      if (h && h.key && h.enabled !== false) headersObj[h.key.trim()] = resolveVars(h.value || '').trim() 
+    })
+  }
   
   let data = null
   if (['POST', 'PUT', 'PATCH'].includes(method)) {
-    try { data = JSON.parse(resolveVars(req.request.body.raw)) } catch(e){ data = resolveVars(req.request.body.raw) }
+    const rawBody = req.request?.body?.raw || '' 
+    try { 
+      data = JSON.parse(resolveVars(rawBody)) 
+    } catch(e) { 
+      data = resolveVars(rawBody) 
+    }
   }
 
   cache.html = `Sending...`
@@ -806,8 +856,6 @@ const sendRequest = async () => {
   cache.code = 'Loading...'
   cache.time = ''
   cache.size = ''
-  cache.previewType = 'none'
-  cache.mode = 'pretty'
   searchQuery.value = '' 
   const startTime = Date.now()
 
@@ -821,39 +869,28 @@ const sendRequest = async () => {
     if (res.ok) {
       const size = new Blob([typeof res.data === 'string' ? res.data : JSON.stringify(res.data)]).size
       cache.size = formatSize(size)
-      cache.rawText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
       cache.html = colorizeJSON(res.data)
+      cache.rawText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
       cache.code = `${res.status} ${res.statusText}`
-
-      const contentType = String(res.headers['content-type'] || res.headers['Content-Type'] || '').toLowerCase()
-      if (contentType.includes('text/html')) {
-        cache.previewType = 'html'
-        cache.previewHtml = typeof res.data === 'string' ? res.data : cache.rawText
-      } else if (contentType.startsWith('image/')) {
-        cache.previewType = 'image'
-        cache.previewSrc = typeof res.data === 'string' ? res.data : ''
-      } else {
-        cache.previewType = 'none'
-      }
-
     } else {
       const errData = res.data || res.message || 'Unknown Error'
       const size = new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size
       cache.size = formatSize(size)
-      cache.rawText = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2)
       cache.html = colorizeJSON(errData)
+      cache.rawText = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2)
       cache.code = res.status ? `${res.status} ${res.statusText}` : 'ERROR'
     }
     
-    appendToHistory(req, cache.code)
+    // Core Fix: Pass the entire cache object to save response snapshot
+    appendToHistory(req, cache)
 
   } catch (err) {
-    const errText = err.message || String(err)
-    cache.html = colorizeJSON(errText)
-    cache.rawText = errText
+    cache.html = colorizeJSON(err.message || String(err))
+    cache.rawText = err.message || String(err)
     cache.code = 'IPC ERROR'
     cache.time = `${Date.now() - startTime} ms`
-    appendToHistory(req, cache.code)
+    // Core Fix: Pass the entire cache object to save response snapshot
+    appendToHistory(req, cache)
   }
 }
 
@@ -905,23 +942,115 @@ const copyResponse = () => {
   }
 }
 
-const appendToHistory = (req, code) => {
-  const item = { 
-    method: req.request.method || 'GET', url: req.request.url || '', 
-    header: req.request.header ? JSON.parse(JSON.stringify(req.request.header)) : [], body: req.request.body ? JSON.parse(JSON.stringify(req.request.body)) : { mode: 'raw', raw: '' },
-    statusCode: code, time: new Date().toLocaleTimeString() 
+// 👉 Core fix: Plan A - Replace variables with real values, include safely truncated response
+const appendToHistory = (req, cache) => {
+  const resolvedUrl = resolveVars(req.request.url || '').trim()
+
+  const resolvedHeaders = (req.request.header || []).map(h => ({
+    key: h.key,
+    value: resolveVars(h.value || ''),
+    enabled: h.enabled
+  }))
+
+  const resolvedBody = {
+    mode: req.request.body?.mode || 'raw',
+    raw: resolveVars(req.request.body?.raw || '') 
   }
-  historyList.value.unshift(item); if (historyList.value.length > 20) historyList.value.pop(); localStorage.setItem('litefetch_history', JSON.stringify(historyList.value))
-}
-const clearHistory = () => { historyList.value = []; localStorage.setItem('litefetch_history', '[]'); ElMessage.success('History cleared.') }
-const restoreHistory = (h) => {
-  if (store.collections.length === 0) store.addCollection({ _id: 'col_' + Date.now(), info: { name: 'Restored History' }, item: [] })
-  const targetCol = store.collections[0]; if (!targetCol.item) targetCol.item = []
-  const newReq = { _id: 'req_' + Math.random().toString(36).substr(2, 9), name: "History: " + (h.url.split('?')[0].split('/').pop() || 'Request').substring(0, 15), request: { method: h.method || 'GET', url: h.url || '', header: h.header ? JSON.parse(JSON.stringify(h.header)) : [], body: h.body ? JSON.parse(JSON.stringify(h.body)) : { mode: 'raw', raw: '' } } }
-  targetCol.item.push(newReq); store.persist(); store.openTab(newReq); showHistory.value = false; ElMessage.success('History restored.')
+
+  // 💥 Safety mechanism: truncate response body if it exceeds ~50KB to prevent indexedDB bloat over time
+  let safeRawText = cache.rawText || ''
+  if (safeRawText.length > 50000) {
+    safeRawText = safeRawText.substring(0, 50000) + '\n\n... [Response too large, truncated for history storage] ...'
+  }
+
+  const item = { 
+    method: req.request.method || 'GET', 
+    url: resolvedUrl, 
+    header: resolvedHeaders, 
+    body: resolvedBody,
+    statusCode: cache.code, 
+    time: new Date().toLocaleTimeString(),
+    responseCache: {
+      rawText: safeRawText,
+      code: cache.code,
+      time: cache.time,
+      size: cache.size
+    }
+  }
+  
+  historyList.value.unshift(item); 
+  if (historyList.value.length > 20) historyList.value.pop(); 
+  
+  // Use localforage to safely store large arrays
+  localforage.setItem('litefetch_history', JSON.parse(JSON.stringify(historyList.value)))
 }
 
-const showContextMenu = (e, type, item, parentArray, index) => { hideAllMenus(); ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY, type, item, parentArray, index } }
+const clearHistory = () => { 
+  historyList.value = []; 
+  localforage.setItem('litefetch_history', []);
+  ElMessage.success('History cleared.') 
+}
+
+// 👉 Core fix: Create a clean dedicated collection for restored history and restore the response snapshot
+const restoreHistory = (h) => {
+  // 1. Find or create the "Restored History" dedicated collection (without variables)
+  let historyCol = store.collections.find(c => c.info?.name === 'Restored History')
+  if (!historyCol) {
+    historyCol = { 
+      _id: 'col_hist_' + Date.now(), 
+      info: { name: 'Restored History' }, 
+      item: [], 
+      variables: [] // Variables pool is permanently empty here!
+    }
+    store.addCollection(historyCol)
+  }
+  
+  if (!historyCol.item) historyCol.item = []
+  if (!historyCol.variables) historyCol.variables = [] 
+  
+  // 2. Build the restored request
+  const newReqId = 'req_' + Math.random().toString(36).substr(2, 9)
+  const newReq = { 
+    _id: newReqId, 
+    name: "History: " + (h.url.split('?')[0].split('/').pop() || 'Request').substring(0, 15), 
+    request: { 
+      method: h.method || 'GET', 
+      url: h.url || '', 
+      header: h.header ? JSON.parse(JSON.stringify(h.header)) : [], 
+      body: h.body ? JSON.parse(JSON.stringify(h.body)) : { mode: 'raw', raw: '' } 
+    } 
+  }
+
+  // 👉 3. Core mechanism: Restore response snapshot if it exists in history
+  if (h.responseCache) {
+    responseCache[newReqId] = {
+      mode: 'pretty',
+      html: colorizeJSON(h.responseCache.rawText || ''),
+      rawText: h.responseCache.rawText || '',
+      code: h.responseCache.code || h.statusCode,
+      time: h.responseCache.time || '',
+      size: h.responseCache.size || '',
+      previewType: 'none', previewHtml: '', previewSrc: ''
+    }
+  }
+  
+  // 4. Place into dedicated collection and open
+  historyCol.item.push(newReq); 
+  store.persist(); 
+  store.openTab(newReq); 
+  showHistory.value = false; 
+  ElMessage.success('History and Response restored!')
+}
+
+// Calculate safe coordinates to prevent menu from clipping outside the window
+const showContextMenu = (e, type, item, parentArray, index) => { 
+  hideAllMenus(); 
+  let menuX = e.clientX
+  let menuY = e.clientY
+  if (window.innerHeight - menuY < 250) menuY = window.innerHeight - 250
+  if (window.innerWidth - menuX < 160) menuX = window.innerWidth - 160
+  ctxMenu.value = { visible: true, x: menuX, y: menuY, type, item, parentArray, index } 
+}
 provide('showContextMenu', showContextMenu)
 
 const ctxAction = async (action) => {
@@ -988,7 +1117,7 @@ const startResizeResponse = () => { const move = (e) => { responseHeight.value =
 </script>
 
 <style>
-/* 强制映射我们之前的变量到纯净的暗黑模式 */
+/* Force map our previous variables to pure dark mode */
 html.dark {
   --bg: #141414;
   --sidebar: #1d1e1f;
@@ -999,18 +1128,18 @@ html.dark {
 body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overflow: hidden; height: 100vh; background: var(--bg); color: #e5eaf3; }
 #app-container { display: flex; width: 100%; height: 100vh; position: relative; }
 
-/* 侧边栏 */
+/* Sidebar */
 #sidebar { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; user-select: none; }
 .sidebar-header { padding: 15px; border-bottom: 1px solid var(--border); background: var(--bg); }
 #collection-repo { flex: 1; overflow-y: auto; padding: 10px; font-size: 13px; color: #a3a6ad; }
 
-/* 拖拽条 */
+/* Resizers */
 .resizer-h { width: 4px; background: transparent; cursor: col-resize; z-index: 10; transition: background 0.2s; }
 .resizer-h:hover { background: #4c4d4f; }
 .resizer-v { height: 4px; background: var(--border); cursor: row-resize; z-index: 10; transition: background 0.2s; }
 .resizer-v:hover { background: #4c4d4f; }
 
-/* 主编辑区 */
+/* Main Editor */
 #main-editor { flex: 1; display: flex; flex-direction: column; background: var(--bg); min-width: 400px; overflow: hidden; }
 #empty-state { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; background: var(--bg); }
 #editor-top { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -1067,16 +1196,16 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
   height: 17px;
 }
 
-/* URL 地址栏 */
+/* URL Bar */
 .url-bar { display: flex; padding: 12px 15px; border-bottom: 1px solid var(--border); gap: 10px; flex-shrink: 0; background: var(--bg); align-items: center; }
 
-/* 强制下拉框 Popper 暗化 */
+/* Force dropdown poppers to be dark */
 .dark-method-popper { background-color: #2b2b2c !important; border: 1px solid #414243 !important; }
 .dark-method-popper .el-select-dropdown__item { color: #e5eaf3; }
 .dark-method-popper .el-select-dropdown__item.hover, .dark-method-popper .el-select-dropdown__item:hover { background-color: #414243 !important; }
 .dark-method-popper .el-popper__arrow::before { background-color: #2b2b2c !important; border: 1px solid #414243 !important; }
 
-/* 修复 Tabs 高度与滚动机制 */
+/* Fix Tabs height and scrolling mechanism */
 .custom-editor-tabs .el-tabs__header { margin: 0; background: var(--sidebar); border-bottom: none !important; box-shadow: none !important; }
 .custom-editor-tabs.el-tabs--card > .el-tabs__header { border-bottom: none !important; }
 .custom-editor-tabs.el-tabs--card > .el-tabs__header .el-tabs__nav { border: none !important; }
@@ -1110,33 +1239,33 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 
 .dirty-dot { width: 6px; height: 6px; border-radius: 50%; background-color: #e6a23c; margin-right: 6px; display: inline-block; }
 
-/* 响应面板 */
+/* Response Panel */
 #response-panel { display: flex; flex-direction: column; flex-shrink: 0; background: var(--bg); border-top: 1px solid var(--border); }
 .res-toolbar { padding: 8px 15px; background: var(--sidebar); display: flex; border-bottom: 1px solid var(--border); align-items: center; }
 #responseBody { flex: 1; margin: 0; padding: 15px; background: #1e1e1e; color: #d4d4d4; font-family: monospace; overflow: auto; font-size: 13px; line-height: 1.5; }
 .response-preview-box { flex: 1; padding: 12px; background: #1e1e1e; overflow: auto; display: flex; align-items: center; justify-content: center; }
 .response-preview-frame { width: 100%; height: 100%; border: none; background: #fff; min-height: 300px; }
 
-/* JSON 高亮 */
+/* JSON Highlight */
 .json-key { color: #9cdcfe; } .json-string { color: #ce9178; } .json-num { color: #b5cea8; }
 
-/* Markdown & HTML 预览框 */
+/* Markdown & HTML Preview Box */
 .html-preview-box { flex: 1; overflow-y: auto; padding: 15px; border: 1px solid var(--border); border-radius: 4px; background: var(--sidebar); font-size: 14px; line-height: 1.6; color: #cfd3dc; }
 
-/* 强制所有原生下拉菜单变为纯黑 */
+/* Force all native dropdown menus to be pure black */
 .el-popper { background-color: #2b2b2c !important; border: 1px solid #414243 !important; }
 .el-popper__arrow::before { background-color: #2b2b2c !important; border: 1px solid #414243 !important; }
 .el-select-dropdown__item { color: #cfd3dc !important; }
 .el-select-dropdown__item.hover, .el-select-dropdown__item:hover { background-color: #414243 !important; }
 
-/* 自定义右键菜单样式 */
+/* Custom context menu styles */
 .custom-context-menu { position: fixed; z-index: 3000; padding: 6px 0; background-color: #2b2b2c; border: 1px solid #414243; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); min-width: 150px; }
 .custom-context-menu ul { list-style: none; margin: 0; padding: 0; }
 .custom-context-menu li { padding: 8px 16px; font-size: 13px; color: #e5eaf3; cursor: pointer; transition: background 0.1s; }
 .custom-context-menu li:hover { background-color: #414243; color: #fff; }
 .custom-context-menu .menu-divider { height: 1px; background-color: #414243; margin: 4px 0; }
 
-/* ================= URL 栏字体与颜色质感优化 ================= */
+/* ================= URL Bar Font and Color Optimization ================= */
 .method-select :is(.el-select__selected-item, .el-input__inner, .el-select__placeholder) {
   font-weight: bold !important;
   font-size: 13px !important;
@@ -1170,7 +1299,7 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
   min-width: 0;
 }
 
-/* ================= 历史记录列表排版优化 ================= */
+/* ================= History List Layout Optimization ================= */
 .history-item { 
   display: flex; 
   align-items: center; 
@@ -1188,29 +1317,29 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 .history-time { width: 70px; text-align: right; color: #909399; font-family: monospace; font-size: 12px; flex-shrink: 0; }
 .env-card { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 12px; background: var(--sidebar); }
 
-/* ================= 左侧栏顶级 Collection 样式 ================= */
+/* ================= Sidebar Top-level Collection Styles ================= */
 #collection-repo summary { list-style: none; outline: none; }
 #collection-repo summary::-webkit-details-marker { display: none; }
 .folder-summary { cursor: pointer; display: flex; align-items: center; border-radius: 4px; transition: background 0.2s; }
 .folder-summary:hover { background: #2b2b2c; }
 
-/* 箭头基础样式 */
+/* Arrow base styles */
 .folder-arrow { font-size: 15px; margin-right: 6px; color: #888; transition: transform 0.2s ease; display: inline-block; }
 .folder-arrow.is-open { transform: rotate(90deg); color: #cfd3dc; }
 
-/* 顶级大集合展开时，箭头跟随主色调变蓝 */
+/* Arrow turns primary color when top-level collection is expanded */
 .top-level-summary .folder-arrow.is-open { color: var(--el-color-primary); }
 
-/* ================= 左侧栏文件夹层级缩进控制 ================= */
+/* ================= Sidebar Folder Indentation Control ================= */
 .folder-content { 
-  margin-left: 14px; /* 控制左侧那条“竖线”的位置（数值越大，竖线越往右） */
-  border-left: 1px solid #414243; /* 竖线的颜色 */
-  padding-left: 2px; /* 控制“Account”等文字距离竖线的距离（数值越大，文字越往右缩进） */
+  margin-left: 14px; /* Control vertical line position */
+  border-left: 1px solid #414243; /* Vertical line color */
+  padding-left: 2px; /* Control text distance from vertical line */
 }
 
-/* ================= 修复富文本与 Markdown 里的表格样式 ================= */
+/* ================= Fix Table Styles in Rich Text and Markdown ================= */
 .html-preview-box table {
-  border-collapse: collapse; /* 合并相邻边框 */
+  border-collapse: collapse; /* Collapse borders */
   width: 100%;
   margin: 15px 0;
   font-size: 13px;
@@ -1218,19 +1347,19 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 
 .html-preview-box th, 
 .html-preview-box td {
-  border: 1px solid #414243; /* 暗黑主题的边框色 */
+  border: 1px solid #414243; /* Dark theme border color */
   padding: 10px 12px;
   text-align: left;
   line-height: 1.5;
 }
 
 .html-preview-box th {
-  background-color: #2b2b2c; /* 表头加上深色背景 */
+  background-color: #2b2b2c; /* Dark background for table header */
   font-weight: bold;
   color: #e5eaf3;
 }
 
 .html-preview-box tr:hover {
-  background-color: #272727; /* 鼠标悬浮某一行时微微变亮 */
+  background-color: #272727; /* Slight highlight on row hover */
 }
 </style>

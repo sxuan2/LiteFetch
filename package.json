@@ -23,6 +23,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "axios": "^1.13.6",
     "element-plus": "^2.13.6",
+    "localforage": "^1.10.0",
     "marked": "^17.0.5",
     "pinia": "^3.0.4"
   },
