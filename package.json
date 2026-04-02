@@ -5,7 +5,6 @@
   "description": "Source-available API testing tool with commercial restrictions.",
   "main": "./out/main/index.js",
   "author": "Sijian Xuan",
-  
   "homepage": "https://electron-vite.org",
   "scripts": {
     "format": "prettier --write .",
@@ -24,6 +23,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "axios": "^1.13.6",
     "element-plus": "^2.13.6",
+    "localforage": "^1.10.0",
     "marked": "^17.0.5",
     "pinia": "^3.0.4"
   },
@@ -50,6 +50,16 @@
     },
     "files": [
       "out"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "../resources",
+        "filter": [
+          "icon.png",
+          "icon.ico"
+        ]
+      }
     ],
     "win": {
       "icon": "resources/icon.ico",
