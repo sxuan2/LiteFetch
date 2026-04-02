@@ -209,43 +209,48 @@
       </div>
 
       <div v-show="store.activeRequest" class="resizer-v" @mousedown="startResizeResponse"></div>
-      <div v-show="store.activeRequest" id="response-panel" :style="{ height: responseHeight + 'px' }">
+      
+      <div v-show="store.activeRequest" id="response-panel" :key="store.activeTabId" :style="{ height: responseHeight + 'px' }">
         <div class="res-toolbar">
           <el-text tag="b" style="margin-right: 15px;">RESPONSE</el-text>
-          <el-tag v-if="statusCode" :type="statusCode.startsWith('2') ? 'success' : 'danger'" effect="dark" size="small">{{ statusCode }}</el-tag>
-          <el-text v-if="statusTime" type="info" size="small" style="margin-left:10px; font-family:monospace;">{{ statusTime }}</el-text>
-          <el-text v-if="statusSize" type="info" size="small" style="margin-left:10px; font-family:monospace;">{{ statusSize }}</el-text>
-          <el-radio-group v-model="responseViewMode" size="small" style="margin-left: 12px;">
+          
+          <el-radio-group v-model="currentRes.mode" size="small" style="margin-right: 15px;">
             <el-radio-button value="pretty">Pretty</el-radio-button>
             <el-radio-button value="raw">Raw</el-radio-button>
-            <el-radio-button value="preview">Preview</el-radio-button>
+            <el-radio-button value="preview" :disabled="currentRes.previewType === 'none'">Preview</el-radio-button>
           </el-radio-group>
+
+          <el-tag v-if="currentRes.code" :type="currentRes.code.startsWith('2') ? 'success' : 'danger'" effect="dark" size="small">
+            {{ currentRes.code }}
+          </el-tag>
+          <el-text v-if="currentRes.time" type="info" size="small" style="margin-left:10px; font-family:monospace;">
+            {{ currentRes.time }}
+          </el-text>
+          <el-text v-if="currentRes.size" type="info" size="small" style="margin-left:10px; font-family:monospace;">
+            {{ currentRes.size }}
+          </el-text>
           
           <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
-            <el-input v-model="searchQuery" :disabled="responseViewMode === 'preview'" placeholder="Search in response..." size="small" style="width: 200px;" @keyup.enter="nextSearch" clearable>
-              <template #append>
-                <el-button :disabled="responseViewMode === 'preview'" @click="nextSearch">
-                  <el-icon><Search /></el-icon>
-                </el-button>
-              </template>
+            <el-input v-model="searchQuery" placeholder="Search in response..." size="small" style="width: 200px;" @keyup.enter="nextSearch" clearable>
+              <template #append><el-button @click="nextSearch">🔍</el-button></template>
             </el-input>
             <el-text type="info" size="small" style="min-width: 45px; text-align:center;">{{ searchCount }}</el-text>
             <el-button-group size="small" style="margin-right: 10px;">
-              <el-button :disabled="responseViewMode === 'preview'" @click="prevSearch"><el-icon><Top /></el-icon></el-button>
-              <el-button :disabled="responseViewMode === 'preview'" @click="nextSearch"><el-icon><Bottom /></el-icon></el-button>
+              <el-button @click="prevSearch">↑</el-button>
+              <el-button @click="nextSearch">↓</el-button>
             </el-button-group>
             <el-button size="small" type="primary" plain @click="copyResponse">Copy JSON</el-button>
           </div>
         </div>
-        <pre v-if="responseViewMode === 'pretty'" id="responseBody" v-html="responseHtml"></pre>
-        <pre v-else-if="responseViewMode === 'raw'" id="responseBody">{{ responseRawText }}</pre>
-        <div v-else id="responsePreview" class="response-preview-box">
-          <img v-if="previewType === 'image'" :src="previewSrc" alt="response preview" style="max-width:100%; max-height:100%; object-fit: contain;" />
-          <iframe v-else-if="previewType === 'html'" :srcdoc="previewHtml" class="response-preview-frame"></iframe>
-          <el-empty v-else description="Preview not available for this response type" />
+        
+        <pre v-show="currentRes.mode === 'pretty'" id="responseBody" v-html="currentRes.html"></pre>
+        <pre v-show="currentRes.mode === 'raw'" style="flex:1; margin:0; padding:15px; overflow:auto; color:#d4d4d4; font-family:monospace; font-size:13px;">{{ currentRes.rawText }}</pre>
+        <div v-show="currentRes.mode === 'preview'" class="response-preview-box">
+          <iframe v-if="currentRes.previewType === 'html'" class="response-preview-frame" :srcdoc="currentRes.previewHtml"></iframe>
+          <img v-else-if="currentRes.previewType === 'image'" :src="currentRes.previewSrc" style="max-width:100%; max-height:100%; object-fit:contain;" />
         </div>
       </div>
-    </div>
+      </div>
 
     <el-dialog v-model="renameDialog.visible" title="Rename" width="400px" center>
       <el-input v-model="renameDialog.name" placeholder="Enter new name" @keyup.enter="confirmRename" />
@@ -343,7 +348,7 @@
 </template>
 
 <script setup>
-import { ref, watch, provide, nextTick, computed, onMounted, onUnmounted } from 'vue'
+import { ref, watch, provide, nextTick, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { useCollectionStore } from './store'
 import SidebarTree from './components/SidebarTree.vue'
 import { marked } from 'marked'
@@ -353,14 +358,37 @@ import { Bottom, Delete, Paperclip, Search, Top } from '@element-plus/icons-vue'
 
 const store = useCollectionStore()
 const currentTab = ref('headers')
-const responseHtml = ref('Ready.')
 const pyStatus = ref('')
 const sidebarWidth = ref(320)
 const responseHeight = ref(300)
 
-const statusCode = ref('')
-const statusTime = ref('')
-const statusSize = ref('')
+// ================= 核心修复：安全隔离的响应缓存池 =================
+const responseCache = reactive({})
+
+const initCache = (tabId) => {
+  if (!responseCache[tabId]) {
+    responseCache[tabId] = {
+      mode: 'pretty',
+      html: 'Ready.',
+      rawText: 'Ready.',
+      code: '',
+      time: '',
+      size: '',
+      previewType: 'none',
+      previewHtml: '',
+      previewSrc: ''
+    }
+  }
+  return responseCache[tabId]
+}
+
+const currentRes = computed(() => {
+  const reqId = store.activeRequest?._id
+  if (!reqId) return initCache('default_tab')
+  return initCache(reqId)
+})
+// ====================================================================
+
 const searchQuery = ref('')
 const searchCount = ref('')
 const currentSearchIndex = ref(0)
@@ -373,11 +401,6 @@ const notesMode = ref('edit')
 const showHistory = ref(false)
 const historyList = ref(JSON.parse(localStorage.getItem('litefetch_history') || '[]'))
 const dragTab = ref({ sourceId: null, targetId: null, targetSide: 'left', isDragging: false })
-const responseViewMode = ref('pretty')
-const responseRawText = ref('Ready.')
-const previewType = ref('none')
-const previewHtml = ref('')
-const previewSrc = ref('')
 
 const showEnvDialog = ref(false)
 const showCodeDialog = ref(false)
@@ -548,27 +571,15 @@ const formatSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
-// const colorizeJSON = (json) => {
-//   const str = typeof json === 'string' ? json : JSON.stringify(json, null, 2)
-//   return str.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, (m) => {
-//     let cls = 'json-num'; if (/^"/.test(m)) cls = /:$/.test(m) ? 'json-key' : 'json-string'
-//     return `<span class="${cls}">${m}</span>`
-//   })
-// }
-
 const colorizeJSON = (json) => {
   let str = typeof json === 'string' ? json : JSON.stringify(json, null, 2)
-  
-  // 【关键改动】：先转义尖括号和与号，防止 Vue 的 v-html 把它当成真 HTML 标签给渲染没了
   str = str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  
   return str.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, (m) => {
     let cls = 'json-num'; if (/^"/.test(m)) cls = /:$/.test(m) ? 'json-key' : 'json-string'
     return `<span class="${cls}">${m}</span>`
   })
 }
 
-// ---------------- 新增：手动创建 Collection ----------------
 const addNewCollection = () => {
   store.addCollection({
     _id: 'col_' + Date.now(),
@@ -579,18 +590,14 @@ const addNewCollection = () => {
   ElMessage.success('New collection created!')
 }
 
-// ---------------- 新增：调用系统默认浏览器打开链接 ----------------
 const handleLinkClick = (e) => {
-  // 向上寻找被点击的 a 标签
   const a = e.target.closest('a')
   if (a && a.href && (a.href.startsWith('http://') || a.href.startsWith('https://'))) {
-    e.preventDefault() // 阻止默认的应用内跳转
+    e.preventDefault() 
     try {
-      // 通过主进程安全地打开外部链接
       window.electron.ipcRenderer.invoke('open-external', a.href)
     } catch (err) {
-      console.error('Failed to open external link', err)
-      window.open(a.href, '_blank') // 兜底方案
+      window.open(a.href, '_blank') 
     }
   }
 }
@@ -627,23 +634,15 @@ const importLiteFetch = () => {
   input.click()
 }
 
-// ---------------- 修复：强大的 Postman 导入解析器 ----------------
 const importCollection = async () => {
   try {
     const data = await window.electron.ipcRenderer.invoke('import-postman-raw')
     if (data) {
-      // 定义一个递归函数，专门把 Postman 数据“洗”成 LiteFetch 标准格式
       const sanitizeNode = (node) => {
-        // 1. 强制注入唯一 _id（解决左侧栏打不开、报错的问题）
         if (!node._id) node._id = 'pm_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36)
-        
-        // 2. 如果是文件夹/集合，递归洗里面的子节点
         if (node.item && Array.isArray(node.item)) {
           node.item.forEach(sanitizeNode)
-        } 
-        // 3. 如果是具体的请求，修复 URL 和 Body 格式
-        else if (node.request) {
-          // Postman 的 url 有时是个对象，提取它的 raw 字符串
+        } else if (node.request) {
           if (typeof node.request.url === 'object') {
             node.request.url = node.request.url.raw || ''
           }
@@ -652,21 +651,16 @@ const importCollection = async () => {
         }
       }
 
-      // 开始洗数据
       sanitizeNode(data)
-      
-      // 修复集合变量 (Postman 叫 variable，我们叫 variables)
       data.variables = []
       if (data.variable && Array.isArray(data.variable)) {
         data.variables = data.variable.map(v => ({ key: v.key || '', value: v.value || '' }))
       }
 
-      // 洗完后存入 Store
       store.addCollection(data)
       ElMessage.success('Postman collection imported and sanitized successfully!')
     }
   } catch (err) {
-    console.error(err)
     ElMessage.error(err?.message || 'Failed to parse Postman collection format.')
   }
 }
@@ -789,73 +783,77 @@ const openCodeGenDialog = () => {
   refreshCodeSnippet()
 }
 
-const copyCodeSnippet = async () => {
-  await navigator.clipboard.writeText(codeSnippet.value || '')
-  ElMessage.success('Code copied.')
-}
 
-const updateResponseViewData = (payload, headers = {}) => {
-  const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)
-  responseRawText.value = text
-  responseHtml.value = colorizeJSON(payload)
-  const contentType = String(headers['content-type'] || headers['Content-Type'] || '').toLowerCase()
-
-  if (contentType.includes('text/html')) {
-    previewType.value = 'html'
-    previewHtml.value = typeof payload === 'string' ? payload : text
-    previewSrc.value = ''
-  } else if (contentType.startsWith('image/')) {
-    previewType.value = 'image'
-    previewSrc.value = typeof payload === 'string' ? payload : ''
-    previewHtml.value = ''
-  } else {
-    previewType.value = 'none'
-    previewHtml.value = ''
-    previewSrc.value = ''
-  }
-}
-
+// ================= Send Request =================
 const sendRequest = async () => {
-  if (variableConflicts.value.hasConflict) return ElMessage.error('Please resolve variable conflicts first.')
+  if (store.hasConflict) return ElMessage.error("Please resolve Variable Conflicts first.")
   const req = store.activeRequest; if (!req) return
-  const payload = buildFinalRequest(); if (!payload) return
-  const { method, finalUrl, headersObj, bodyData } = payload
 
-  const requestClient = window.electron?.ipcRenderer ? null : axios
+  const reqId = req._id
+  const cache = initCache(reqId)
 
-  responseHtml.value = `Sending...`; statusCode.value = 'Loading...'; statusTime.value = ''; statusSize.value = ''; searchQuery.value = '' 
+  let finalUrl = resolveVars(req.request.url).trim()
+  const method = (req.request.method || 'GET').toUpperCase()
+  const headersObj = {}; ;(req.request.header || []).forEach(h => { if (h.key && h.enabled !== false) headersObj[h.key.trim()] = resolveVars(h.value).trim() })
+  
+  let data = null
+  if (['POST', 'PUT', 'PATCH'].includes(method)) {
+    try { data = JSON.parse(resolveVars(req.request.body.raw)) } catch(e){ data = resolveVars(req.request.body.raw) }
+  }
+
+  cache.html = `Sending...`
+  cache.rawText = `Sending...`
+  cache.code = 'Loading...'
+  cache.time = ''
+  cache.size = ''
+  cache.previewType = 'none'
+  cache.mode = 'pretty'
+  searchQuery.value = '' 
   const startTime = Date.now()
 
   try {
-    const res = window.electron?.ipcRenderer
-      ? await window.electron.ipcRenderer.invoke('http-request', {
-          method,
-          url: finalUrl,
-          headers: headersObj,
-          data: ['GET', 'HEAD'].includes(method) ? undefined : bodyData,
-          timeout: 15000
-        })
-      : await requestClient({ method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : bodyData, timeout: 15000 })
+    const res = await window.electron.ipcRenderer.invoke('http-request', {
+      method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : data, timeout: 15000
+    })
 
-    if (res.ok === false) {
-      const errData = res.data || res.message || 'Request failed'
-      statusSize.value = formatSize(new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size)
-      updateResponseViewData(errData, res.headers || {})
-      statusCode.value = res.status ? `${res.status} ${res.statusText}` : 'ERROR'
-      statusTime.value = `${Date.now() - startTime} ms`
-      appendToHistory(req, statusCode.value)
-      return
+    cache.time = `${Date.now() - startTime} ms`
+
+    if (res.ok) {
+      const size = new Blob([typeof res.data === 'string' ? res.data : JSON.stringify(res.data)]).size
+      cache.size = formatSize(size)
+      cache.rawText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
+      cache.html = colorizeJSON(res.data)
+      cache.code = `${res.status} ${res.statusText}`
+
+      const contentType = String(res.headers['content-type'] || res.headers['Content-Type'] || '').toLowerCase()
+      if (contentType.includes('text/html')) {
+        cache.previewType = 'html'
+        cache.previewHtml = typeof res.data === 'string' ? res.data : cache.rawText
+      } else if (contentType.startsWith('image/')) {
+        cache.previewType = 'image'
+        cache.previewSrc = typeof res.data === 'string' ? res.data : ''
+      } else {
+        cache.previewType = 'none'
+      }
+
+    } else {
+      const errData = res.data || res.message || 'Unknown Error'
+      const size = new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size
+      cache.size = formatSize(size)
+      cache.rawText = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2)
+      cache.html = colorizeJSON(errData)
+      cache.code = res.status ? `${res.status} ${res.statusText}` : 'ERROR'
     }
+    
+    appendToHistory(req, cache.code)
 
-    const resultData = res.data
-    const size = new Blob([typeof resultData === 'string' ? resultData : JSON.stringify(resultData)]).size
-    statusSize.value = formatSize(size); updateResponseViewData(resultData, res.headers || {})
-    statusCode.value = `${res.status} ${res.statusText}`; statusTime.value = `${Date.now() - startTime} ms`; appendToHistory(req, statusCode.value)
   } catch (err) {
-    const errData = err.response?.data || err.message
-    statusSize.value = formatSize(new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size)
-    updateResponseViewData(errData, err.response?.headers || {}); statusCode.value = err.response ? `${err.response.status} ${err.response.statusText}` : 'ERROR'
-    statusTime.value = `${Date.now() - startTime} ms`; appendToHistory(req, statusCode.value)
+    const errText = err.message || String(err)
+    cache.html = colorizeJSON(errText)
+    cache.rawText = errText
+    cache.code = 'IPC ERROR'
+    cache.time = `${Date.now() - startTime} ms`
+    appendToHistory(req, cache.code)
   }
 }
 
@@ -868,7 +866,7 @@ const highlightCurrentMatch = () => {
 }
 
 const executeSearch = () => {
-  if (responseViewMode.value === 'preview') {
+  if (currentRes.value.mode !== 'pretty') {
     searchCount.value = ''
     currentSearchIndex.value = 0
     return
@@ -896,8 +894,16 @@ const executeSearch = () => {
 
 const nextSearch = () => { const marks = document.querySelectorAll('#responseBody mark.search-mark'); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value >= marks.length ? 1 : currentSearchIndex.value + 1; highlightCurrentMatch() }
 const prevSearch = () => { const marks = document.querySelectorAll('#responseBody mark.search-mark'); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value <= 1 ? marks.length : currentSearchIndex.value - 1; highlightCurrentMatch() }
-watch([searchQuery, responseHtml], () => { nextTick(() => { executeSearch() }) })
-watch(responseViewMode, () => { nextTick(() => { executeSearch() }) })
+
+watch([searchQuery, () => currentRes.value.html], () => { nextTick(() => { executeSearch() }) })
+watch(() => currentRes.value.mode, () => { nextTick(() => { executeSearch() }) })
+
+const copyResponse = () => { 
+  if (currentRes.value.mode === 'pretty' || currentRes.value.mode === 'raw') {
+    navigator.clipboard.writeText(currentRes.value.rawText); 
+    ElMessage.success('Copied to clipboard!') 
+  }
+}
 
 const appendToHistory = (req, code) => {
   const item = { 
@@ -978,7 +984,7 @@ const onToggle = (id, e) => {
 }
 const startResizeSidebar = () => { const move = (e) => { sidebarWidth.value = Math.max(200, Math.min(e.clientX, 800)) }; const stop = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', stop) }; document.addEventListener('mousemove', move); document.addEventListener('mouseup', stop) }
 const startResizeResponse = () => { const move = (e) => { responseHeight.value = Math.max(100, window.innerHeight - e.clientY) }; const stop = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', stop) }; document.addEventListener('mousemove', move); document.addEventListener('mouseup', stop) }
-const copyResponse = () => { const pre = document.getElementById('responseBody'); if(pre) { navigator.clipboard.writeText(pre.innerText); ElMessage.success('Copied to clipboard!') } }
+
 </script>
 
 <style>
