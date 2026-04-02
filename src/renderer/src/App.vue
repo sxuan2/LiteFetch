@@ -823,8 +823,6 @@ const openCodeGenDialog = () => {
   refreshCodeSnippet()
 }
 
-
-// ================= STRICT ASYNC REQUEST SENDER (Ultra-Safe) =================
 const sendRequest = async () => {
   if (store.hasConflict) return ElMessage.error("Please resolve Variable Conflicts first.")
   const req = store.activeRequest; if (!req) return
@@ -856,6 +854,7 @@ const sendRequest = async () => {
   cache.code = 'Loading...'
   cache.time = ''
   cache.size = ''
+  cache.previewType = 'none' // Reset preview state
   searchQuery.value = '' 
   const startTime = Date.now()
 
@@ -866,12 +865,23 @@ const sendRequest = async () => {
 
     cache.time = `${Date.now() - startTime} ms`
 
+    // 👉 CORE FIX: Detect Content-Type to activate Preview feature
+    const resHeaders = res.headers || {}
+    const contentType = (resHeaders['content-type'] || resHeaders['Content-Type'] || '').toLowerCase()
+    const isHtml = contentType.includes('text/html')
+
     if (res.ok) {
       const size = new Blob([typeof res.data === 'string' ? res.data : JSON.stringify(res.data)]).size
       cache.size = formatSize(size)
       cache.html = colorizeJSON(res.data)
       cache.rawText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
       cache.code = `${res.status} ${res.statusText}`
+      
+      // Assign HTML preview data if applicable
+      if (isHtml) {
+        cache.previewType = 'html'
+        cache.previewHtml = typeof res.data === 'string' ? res.data : JSON.stringify(res.data)
+      }
     } else {
       const errData = res.data || res.message || 'Unknown Error'
       const size = new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size
@@ -879,9 +889,15 @@ const sendRequest = async () => {
       cache.html = colorizeJSON(errData)
       cache.rawText = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2)
       cache.code = res.status ? `${res.status} ${res.statusText}` : 'ERROR'
+      
+      // Allow previewing error pages (like Nginx 404 HTML pages)
+      if (isHtml) {
+        cache.previewType = 'html'
+        cache.previewHtml = typeof errData === 'string' ? errData : JSON.stringify(errData)
+      }
     }
     
-    // Core Fix: Pass the entire cache object to save response snapshot
+    // Pass the entire cache object to save response snapshot
     appendToHistory(req, cache)
 
   } catch (err) {
@@ -889,7 +905,6 @@ const sendRequest = async () => {
     cache.rawText = err.message || String(err)
     cache.code = 'IPC ERROR'
     cache.time = `${Date.now() - startTime} ms`
-    // Core Fix: Pass the entire cache object to save response snapshot
     appendToHistory(req, cache)
   }
 }
@@ -942,7 +957,7 @@ const copyResponse = () => {
   }
 }
 
-// 👉 Core fix: Plan A - Replace variables with real values, include safely truncated response
+// 👉 Core fix: Plan A - Replace variables with real values, include safely truncated response & preview data
 const appendToHistory = (req, cache) => {
   const resolvedUrl = resolveVars(req.request.url || '').trim()
 
@@ -957,7 +972,7 @@ const appendToHistory = (req, cache) => {
     raw: resolveVars(req.request.body?.raw || '') 
   }
 
-  // 💥 Safety mechanism: truncate response body if it exceeds ~50KB to prevent indexedDB bloat over time
+  // Safety mechanism: truncate response body if it exceeds ~50KB to prevent indexedDB bloat over time
   let safeRawText = cache.rawText || ''
   if (safeRawText.length > 50000) {
     safeRawText = safeRawText.substring(0, 50000) + '\n\n... [Response too large, truncated for history storage] ...'
@@ -974,7 +989,11 @@ const appendToHistory = (req, cache) => {
       rawText: safeRawText,
       code: cache.code,
       time: cache.time,
-      size: cache.size
+      size: cache.size,
+      // Save preview state into history
+      previewType: cache.previewType || 'none',
+      previewHtml: cache.previewHtml || '',
+      previewSrc: cache.previewSrc || ''
     }
   }
   
@@ -991,7 +1010,7 @@ const clearHistory = () => {
   ElMessage.success('History cleared.') 
 }
 
-// 👉 Core fix: Create a clean dedicated collection for restored history and restore the response snapshot
+// 👉 Core fix: Create a clean dedicated collection for restored history and restore the response snapshot + preview
 const restoreHistory = (h) => {
   // 1. Find or create the "Restored History" dedicated collection (without variables)
   let historyCol = store.collections.find(c => c.info?.name === 'Restored History')
@@ -1021,7 +1040,7 @@ const restoreHistory = (h) => {
     } 
   }
 
-  // 👉 3. Core mechanism: Restore response snapshot if it exists in history
+  // 👉 3. Core mechanism: Restore response snapshot and preview if it exists in history
   if (h.responseCache) {
     responseCache[newReqId] = {
       mode: 'pretty',
@@ -1030,7 +1049,10 @@ const restoreHistory = (h) => {
       code: h.responseCache.code || h.statusCode,
       time: h.responseCache.time || '',
       size: h.responseCache.size || '',
-      previewType: 'none', previewHtml: '', previewSrc: ''
+      // Restore preview data
+      previewType: h.responseCache.previewType || 'none', 
+      previewHtml: h.responseCache.previewHtml || '', 
+      previewSrc: h.responseCache.previewSrc || ''
     }
   }
   
