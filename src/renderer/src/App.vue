@@ -16,6 +16,9 @@
           <el-button size="small" type="primary" plain style="flex: 1; margin: 0; padding: 0;" @click="showHistory = true">History</el-button>
           <el-button size="small" type="success" plain style="flex: 1; margin: 0; padding: 0;" @click="exportLiteFetch">Export</el-button>
           <el-button size="small" type="warning" plain style="flex: 1; margin: 0; padding: 0;" @click="importLiteFetch">Restore</el-button>
+          <el-button size="small" type="info" plain style="width: 32px; margin: 0; padding: 0;" title="Global Settings" @click="showSettingsDialog = true">
+            <el-icon><Setting /></el-icon>
+          </el-button>
         </div>
       </div>
 
@@ -319,6 +322,25 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="showSettingsDialog" width="400px">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: bold; color: var(--el-text-color-primary);">
+          <el-icon><Setting /></el-icon>
+          <span>Global Settings</span>
+        </div>
+      </template>
+      
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 15px;">
+        <el-text tag="b">Request Timeout (Seconds)</el-text>
+        <el-input-number v-model="appSettings.timeout" :min="1" :max="300" size="small" />
+      </div>
+      <el-text type="info" size="small">This timeout applies to all HTTP requests and generated code snippets.</el-text>
+      
+      <template #footer>
+        <el-button @click="showSettingsDialog = false">Close</el-button>
+      </template>
+    </el-dialog>
+
     <div v-if="ctxMenu.visible" class="custom-context-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
       <ul>
         <li v-if="ctxMenu.type !== 'request'" @click.stop="ctxAction('addReq')">Add Request</li>
@@ -355,7 +377,7 @@ import { marked } from 'marked'
 import axios from 'axios'
 import localforage from 'localforage'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Bottom, Delete, Paperclip, Search, Top } from '@element-plus/icons-vue'
+import { Bottom, Delete, Paperclip, Search, Top, Setting } from '@element-plus/icons-vue'
 
 const store = useCollectionStore()
 
@@ -373,6 +395,15 @@ const currentTab = ref('headers')
 const pyStatus = ref('')
 const sidebarWidth = ref(320)
 const responseHeight = ref(300)
+
+// ================= Global Settings =================
+const showSettingsDialog = ref(false)
+const appSettings = ref(JSON.parse(localStorage.getItem('litefetch_settings') || '{"timeout": 15}'))
+
+watch(appSettings, (val) => { 
+  localStorage.setItem('litefetch_settings', JSON.stringify(val)) 
+}, { deep: true })
+
 
 // ================= Core Fix: Safely isolated response cache pool =================
 const responseCache = reactive({})
@@ -764,6 +795,8 @@ const refreshCodeSnippet = () => {
   const headersEntries = Object.entries(headersObj)
   const bodyString = bodyData == null ? '' : (typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData, null, 2))
 
+  const timeoutSec = appSettings.value.timeout || 15 // Global Timeout Setting
+
   if (codeLang.value === 'curl') {
     const lines = [
       `curl -X ${method} ${JSON.stringify(finalUrl)}`,
@@ -799,7 +832,7 @@ ${pyData}response = requests.request(
     method=${JSON.stringify(method)},
     url=url,
     headers=headers,
-${bodyData == null ? '' : '    data=data,\n'}    timeout=15
+${bodyData == null ? '' : '    data=data,\n'}    timeout=${timeoutSec}
 )
 
 print(response.status_code)
@@ -813,6 +846,7 @@ axios({
   method: ${JSON.stringify(method)},
   url: ${JSON.stringify(finalUrl)},
   headers: ${JSON.stringify(headersObj, null, 2)},
+  timeout: ${timeoutSec * 1000},
 ${bodyData == null ? '' : `  data: ${JSON.stringify(bodyData, null, 2)},\n`} }).then((res) => {
   console.log(res.status, res.data)
 })`
@@ -823,6 +857,8 @@ const openCodeGenDialog = () => {
   refreshCodeSnippet()
 }
 
+
+// ================= STRICT ASYNC REQUEST SENDER (Ultra-Safe) =================
 const sendRequest = async () => {
   if (store.hasConflict) return ElMessage.error("Please resolve Variable Conflicts first.")
   const req = store.activeRequest; if (!req) return
@@ -858,9 +894,11 @@ const sendRequest = async () => {
   searchQuery.value = '' 
   const startTime = Date.now()
 
+  const timeoutMs = (appSettings.value.timeout || 15) * 1000 // Apply Global Setting
+
   try {
     const res = await window.electron.ipcRenderer.invoke('http-request', {
-      method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : data, timeout: 15000
+      method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : data, timeout: timeoutMs
     })
 
     cache.time = `${Date.now() - startTime} ms`
@@ -890,14 +928,14 @@ const sendRequest = async () => {
       cache.rawText = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2)
       cache.code = res.status ? `${res.status} ${res.statusText}` : 'ERROR'
       
-      // Allow previewing error pages (like Nginx 404 HTML pages)
+      // Allow previewing error pages
       if (isHtml) {
         cache.previewType = 'html'
         cache.previewHtml = typeof errData === 'string' ? errData : JSON.stringify(errData)
       }
     }
     
-    // Pass the entire cache object to save response snapshot
+    // Core Fix: Pass the entire cache object to save response snapshot
     appendToHistory(req, cache)
 
   } catch (err) {
@@ -905,6 +943,7 @@ const sendRequest = async () => {
     cache.rawText = err.message || String(err)
     cache.code = 'IPC ERROR'
     cache.time = `${Date.now() - startTime} ms`
+    // Core Fix: Pass the entire cache object to save response snapshot
     appendToHistory(req, cache)
   }
 }
@@ -1385,3 +1424,4 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
   background-color: #272727; /* Slight highlight on row hover */
 }
 </style>
+```
