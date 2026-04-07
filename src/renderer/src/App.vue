@@ -16,6 +16,9 @@
           <el-button size="small" type="primary" plain style="flex: 1; margin: 0; padding: 0;" @click="showHistory = true">History</el-button>
           <el-button size="small" type="success" plain style="flex: 1; margin: 0; padding: 0;" @click="exportLiteFetch">Export</el-button>
           <el-button size="small" type="warning" plain style="flex: 1; margin: 0; padding: 0;" @click="importLiteFetch">Restore</el-button>
+          <el-button size="small" type="info" plain style="width: 32px; margin: 0; padding: 0;" title="Global Settings" @click="showSettingsDialog = true">
+            <el-icon><Setting /></el-icon>
+          </el-button>
         </div>
       </div>
 
@@ -319,6 +322,25 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="showSettingsDialog" width="400px">
+      <template #header>
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: bold; color: var(--el-text-color-primary);">
+          <el-icon><Setting /></el-icon>
+          <span>Global Settings</span>
+        </div>
+      </template>
+      
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 15px;">
+        <el-text tag="b">Request Timeout (Seconds)</el-text>
+        <el-input-number v-model="appSettings.timeout" :min="1" :max="300" size="small" />
+      </div>
+      <el-text type="info" size="small">This timeout applies to all HTTP requests and generated code snippets.</el-text>
+      
+      <template #footer>
+        <el-button @click="showSettingsDialog = false">Close</el-button>
+      </template>
+    </el-dialog>
+
     <div v-if="ctxMenu.visible" class="custom-context-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
       <ul>
         <li v-if="ctxMenu.type !== 'request'" @click.stop="ctxAction('addReq')">Add Request</li>
@@ -355,7 +377,7 @@ import { marked } from 'marked'
 import axios from 'axios'
 import localforage from 'localforage'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Bottom, Delete, Paperclip, Search, Top } from '@element-plus/icons-vue'
+import { Bottom, Delete, Paperclip, Search, Top, Setting } from '@element-plus/icons-vue'
 
 const store = useCollectionStore()
 
@@ -373,6 +395,15 @@ const currentTab = ref('headers')
 const pyStatus = ref('')
 const sidebarWidth = ref(320)
 const responseHeight = ref(300)
+
+// ================= Global Settings =================
+const showSettingsDialog = ref(false)
+const appSettings = ref(JSON.parse(localStorage.getItem('litefetch_settings') || '{"timeout": 15}'))
+
+watch(appSettings, (val) => { 
+  localStorage.setItem('litefetch_settings', JSON.stringify(val)) 
+}, { deep: true })
+
 
 // ================= Core Fix: Safely isolated response cache pool =================
 const responseCache = reactive({})
@@ -764,6 +795,8 @@ const refreshCodeSnippet = () => {
   const headersEntries = Object.entries(headersObj)
   const bodyString = bodyData == null ? '' : (typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData, null, 2))
 
+  const timeoutSec = appSettings.value.timeout || 15 // Global Timeout Setting
+
   if (codeLang.value === 'curl') {
     const lines = [
       `curl -X ${method} ${JSON.stringify(finalUrl)}`,
@@ -799,7 +832,7 @@ ${pyData}response = requests.request(
     method=${JSON.stringify(method)},
     url=url,
     headers=headers,
-${bodyData == null ? '' : '    data=data,\n'}    timeout=15
+${bodyData == null ? '' : '    data=data,\n'}    timeout=${timeoutSec}
 )
 
 print(response.status_code)
@@ -813,6 +846,7 @@ axios({
   method: ${JSON.stringify(method)},
   url: ${JSON.stringify(finalUrl)},
   headers: ${JSON.stringify(headersObj, null, 2)},
+  timeout: ${timeoutSec * 1000},
 ${bodyData == null ? '' : `  data: ${JSON.stringify(bodyData, null, 2)},\n`} }).then((res) => {
   console.log(res.status, res.data)
 })`
@@ -856,15 +890,23 @@ const sendRequest = async () => {
   cache.code = 'Loading...'
   cache.time = ''
   cache.size = ''
+  cache.previewType = 'none' // Reset preview state
   searchQuery.value = '' 
   const startTime = Date.now()
 
+  const timeoutMs = (appSettings.value.timeout || 15) * 1000 // Apply Global Setting
+
   try {
     const res = await window.electron.ipcRenderer.invoke('http-request', {
-      method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : data, timeout: 15000
+      method, url: finalUrl, headers: headersObj, data: ['GET', 'HEAD'].includes(method) ? undefined : data, timeout: timeoutMs
     })
 
     cache.time = `${Date.now() - startTime} ms`
+
+    // 👉 CORE FIX: Detect Content-Type to activate Preview feature
+    const resHeaders = res.headers || {}
+    const contentType = (resHeaders['content-type'] || resHeaders['Content-Type'] || '').toLowerCase()
+    const isHtml = contentType.includes('text/html')
 
     if (res.ok) {
       const size = new Blob([typeof res.data === 'string' ? res.data : JSON.stringify(res.data)]).size
@@ -872,6 +914,12 @@ const sendRequest = async () => {
       cache.html = colorizeJSON(res.data)
       cache.rawText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
       cache.code = `${res.status} ${res.statusText}`
+      
+      // Assign HTML preview data if applicable
+      if (isHtml) {
+        cache.previewType = 'html'
+        cache.previewHtml = typeof res.data === 'string' ? res.data : JSON.stringify(res.data)
+      }
     } else {
       const errData = res.data || res.message || 'Unknown Error'
       const size = new Blob([typeof errData === 'string' ? errData : JSON.stringify(errData)]).size
@@ -879,6 +927,12 @@ const sendRequest = async () => {
       cache.html = colorizeJSON(errData)
       cache.rawText = typeof errData === 'string' ? errData : JSON.stringify(errData, null, 2)
       cache.code = res.status ? `${res.status} ${res.statusText}` : 'ERROR'
+      
+      // Allow previewing error pages
+      if (isHtml) {
+        cache.previewType = 'html'
+        cache.previewHtml = typeof errData === 'string' ? errData : JSON.stringify(errData)
+      }
     }
     
     // Core Fix: Pass the entire cache object to save response snapshot
@@ -942,7 +996,7 @@ const copyResponse = () => {
   }
 }
 
-// 👉 Core fix: Plan A - Replace variables with real values, include safely truncated response
+// 👉 Core fix: Plan A - Replace variables with real values, include safely truncated response & preview data
 const appendToHistory = (req, cache) => {
   const resolvedUrl = resolveVars(req.request.url || '').trim()
 
@@ -957,7 +1011,7 @@ const appendToHistory = (req, cache) => {
     raw: resolveVars(req.request.body?.raw || '') 
   }
 
-  // 💥 Safety mechanism: truncate response body if it exceeds ~50KB to prevent indexedDB bloat over time
+  // Safety mechanism: truncate response body if it exceeds ~50KB to prevent indexedDB bloat over time
   let safeRawText = cache.rawText || ''
   if (safeRawText.length > 50000) {
     safeRawText = safeRawText.substring(0, 50000) + '\n\n... [Response too large, truncated for history storage] ...'
@@ -974,7 +1028,11 @@ const appendToHistory = (req, cache) => {
       rawText: safeRawText,
       code: cache.code,
       time: cache.time,
-      size: cache.size
+      size: cache.size,
+      // Save preview state into history
+      previewType: cache.previewType || 'none',
+      previewHtml: cache.previewHtml || '',
+      previewSrc: cache.previewSrc || ''
     }
   }
   
@@ -991,7 +1049,7 @@ const clearHistory = () => {
   ElMessage.success('History cleared.') 
 }
 
-// 👉 Core fix: Create a clean dedicated collection for restored history and restore the response snapshot
+// 👉 Core fix: Create a clean dedicated collection for restored history and restore the response snapshot + preview
 const restoreHistory = (h) => {
   // 1. Find or create the "Restored History" dedicated collection (without variables)
   let historyCol = store.collections.find(c => c.info?.name === 'Restored History')
@@ -1021,7 +1079,7 @@ const restoreHistory = (h) => {
     } 
   }
 
-  // 👉 3. Core mechanism: Restore response snapshot if it exists in history
+  // 👉 3. Core mechanism: Restore response snapshot and preview if it exists in history
   if (h.responseCache) {
     responseCache[newReqId] = {
       mode: 'pretty',
@@ -1030,7 +1088,10 @@ const restoreHistory = (h) => {
       code: h.responseCache.code || h.statusCode,
       time: h.responseCache.time || '',
       size: h.responseCache.size || '',
-      previewType: 'none', previewHtml: '', previewSrc: ''
+      // Restore preview data
+      previewType: h.responseCache.previewType || 'none', 
+      previewHtml: h.responseCache.previewHtml || '', 
+      previewSrc: h.responseCache.previewSrc || ''
     }
   }
   
@@ -1363,3 +1424,4 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
   background-color: #272727; /* Slight highlight on row hover */
 }
 </style>
+```
