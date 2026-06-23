@@ -87,24 +87,19 @@ export const useCollectionStore = defineStore('collection', {
       this.openTabs = tabs
       this.normalizePinnedTabOrder()
     },
-    // [找回丢失的功能]：输入 URL 时失去焦点，自动把 {{xxx}} 提取到变量表
+    // 输入 URL 时失去焦点，自动把 {{xxx}} 提取到当前请求变量表
     extractUrlVariables() {
       const req = this.activeRequest
       if (!req || !req.request.url) return
       const matches = req.request.url.match(/\{\{(.*?)\}\}/g)
       if (matches) {
-        const col = this.activeCollection
-        if (!col) return
-        let added = false
+        if (!req.variables) req.variables = []
         matches.forEach(match => {
           const key = match.replace(/[{}]/g, '').trim()
-          // 如果提取到的变量不在表里，就自动加进去
-          if (key && !col.variables.find(v => v.key === key)) {
-            col.variables.push({ key, value: '' })
-            added = true
+          if (key && !req.variables.find(v => v.key === key)) {
+            req.variables.push({ key, value: '' })
           }
         })
-        if (added) this.persist()
       }
     },
     openTab(req) {
@@ -149,7 +144,7 @@ export const useCollectionStore = defineStore('collection', {
     addCollection(data) { this.collections.push(data); this.persist() },
     addFolder(arr) { arr.push({ _id: 'fld_' + Date.now(), info: { name: 'New Folder' }, item: [] }); this.persist() },
     addNewReq(arr) {
-      const newReq = { _id: 'req_' + Date.now(), name: 'New Request', request: { method: 'GET', url: '', header: [], body: { mode: 'raw', raw: '' } } }
+      const newReq = { _id: 'req_' + Date.now(), name: 'New Request', notes: '', variables: [], request: { method: 'GET', url: '', header: [], body: { mode: 'raw', raw: '' }, description: '' } }
       arr.push(newReq); this.persist(); this.openTab(newReq);
     },
     duplicateReq(arr, index) {
