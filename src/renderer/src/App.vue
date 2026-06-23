@@ -136,20 +136,31 @@
               <div class="pane-container">
                 <el-alert
                   v-if="variableConflicts.hasConflict"
-                  title="Variable Conflict Warning"
+                  title="Variable Override Notice"
                   :description="variableConflicts.message"
-                  type="error"
+                  type="warning"
                   show-icon
                   :closable="false"
                   style="margin-bottom: 15px;"
                 />
-                <el-text tag="b" style="margin-bottom: 8px; display: block;">Static Variables</el-text>
-                <el-table :data="store.activeCollection?.variables" border style="width: 100%; margin-bottom: 15px;" size="small">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 10px;">
+                  <el-text tag="b">Request Variables</el-text>
+                  <el-switch v-model="showOnlyUsedVariables" size="small" active-text="Only used" inactive-text="All" />
+                </div>
+                <el-table :data="visibleRequestVariables" border style="width: 100%; margin-bottom: 15px;" size="small" empty-text="No request variables. Use {{name}} in this request or add one.">
                   <el-table-column label="Key" min-width="150" resizable><template #default="scope"><el-input v-model="scope.row.key" placeholder="Key" size="small"></el-input></template></el-table-column>
                   <el-table-column label="Value" min-width="250" resizable><template #default="scope"><el-input v-model="scope.row.value" placeholder="Value" size="small"></el-input></template></el-table-column>
-                  <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link aria-label="Delete variable" @click="store.activeCollection.variables.splice(scope.$index, 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
+                  <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link aria-label="Delete request variable" @click="deleteVariable(store.activeRequest.variables, scope.row)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
                 </el-table>
-                <el-button style="margin-bottom: 25px;" @click="store.activeCollection?.variables.push({key:'', value:''})">+ Add Variable</el-button>
+                <el-button style="margin-bottom: 25px;" @click="addRequestVariable">+ Add Request Variable</el-button>
+
+                <el-text tag="b" style="margin-bottom: 8px; display: block;">Collection Variables</el-text>
+                <el-table :data="visibleCollectionVariables" border style="width: 100%; margin-bottom: 15px;" size="small" empty-text="No collection variables match this request.">
+                  <el-table-column label="Key" min-width="150" resizable><template #default="scope"><el-input v-model="scope.row.key" placeholder="Key" size="small" @change="store.persist()"></el-input></template></el-table-column>
+                  <el-table-column label="Value" min-width="250" resizable><template #default="scope"><el-input v-model="scope.row.value" placeholder="Value" size="small" @change="store.persist()"></el-input></template></el-table-column>
+                  <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link aria-label="Delete collection variable" @click="deleteCollectionVariable(scope.row)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
+                </el-table>
+                <el-button style="margin-bottom: 25px;" @click="addCollectionVariable">+ Add Collection Variable</el-button>
                 
                 <el-text tag="b" type="primary" style="margin-bottom: 8px; display: block;">Dynamic Variables (Python Injected)</el-text>
                 <el-table :data="dynamicVarsList" border style="width: 100%" size="small" empty-text="No dynamic variables currently injected.">
@@ -247,7 +258,7 @@
         </div>
         
         <pre v-show="currentRes.mode === 'pretty'" id="responseBody" v-html="currentRes.html"></pre>
-        <pre v-show="currentRes.mode === 'raw'" style="flex:1; margin:0; padding:15px; overflow:auto; color:#d4d4d4; font-family:monospace; font-size:13px;">{{ currentRes.rawText }}</pre>
+        <pre v-show="currentRes.mode === 'raw'" id="rawResponseBody" v-html="escapeHtml(currentRes.rawText)"></pre>
         <div v-show="currentRes.mode === 'preview'" class="response-preview-box">
           <iframe v-if="currentRes.previewType === 'html'" class="response-preview-frame" :srcdoc="currentRes.previewHtml"></iframe>
           <img v-else-if="currentRes.previewType === 'image'" :src="currentRes.previewSrc" style="max-width:100%; max-height:100%; object-fit:contain;" />
@@ -385,9 +396,12 @@ const store = useCollectionStore()
 watch(() => store.activeRequest, (req) => {
   if (req) {
     if (!req._id) req._id = 'req_' + Math.random().toString(36).substr(2, 9)
+    if (req.notes === undefined) req.notes = ''
+    if (!req.variables) req.variables = []
     if (!req.request) req.request = { method: 'GET', url: '', header: [], body: { mode: 'raw', raw: '' } }
     if (!req.request.header) req.request.header = []
     if (!req.request.body) req.request.body = { mode: 'raw', raw: '' }
+    if (req.request.description === undefined) req.request.description = ''
   }
 }, { immediate: true })
 
@@ -435,6 +449,7 @@ const currentRes = computed(() => {
 const searchQuery = ref('')
 const searchCount = ref('')
 const currentSearchIndex = ref(0)
+let searchTimer = null
 
 const ctxMenu = ref({ visible: false, x: 0, y: 0, type: '', item: null, parentArray: null, index: -1 })
 const tabCtxMenu = ref({ visible: false, x: 0, y: 0, tabId: null })
@@ -453,6 +468,7 @@ const dragTab = ref({ sourceId: null, targetId: null, targetSide: 'left', isDrag
 
 const showEnvDialog = ref(false)
 const showCodeDialog = ref(false)
+const showOnlyUsedVariables = ref(true)
 const codeLang = ref('curl')
 const codeSnippet = ref('')
 
@@ -468,6 +484,60 @@ const activeEnvironment = computed(() => {
   return environments.value.find(e => e.id === activeEnvId.value) || environments.value[0]
 })
 
+const usedVariableKeys = computed(() => {
+  const req = store.activeRequest
+  const chunks = []
+  if (req?.request?.url) chunks.push(req.request.url)
+  ;(req?.request?.header || []).forEach(h => {
+    if (h?.key) chunks.push(h.key)
+    if (h?.value) chunks.push(h.value)
+  })
+  if (req?.request?.body?.raw) chunks.push(req.request.body.raw)
+
+  const keys = new Set()
+  chunks.join('\n').replace(/\{\{(.+?)\}\}/g, (_match, key) => {
+    const normalized = key.trim()
+    if (normalized) keys.add(normalized)
+    return ''
+  })
+  return keys
+})
+
+const filterUsedVariables = (variables = []) => {
+  if (!showOnlyUsedVariables.value) return variables
+  const used = usedVariableKeys.value
+  return variables.filter(v => !v.key || used.has(v.key))
+}
+
+const visibleRequestVariables = computed(() => filterUsedVariables(store.activeRequest?.variables || []))
+const visibleCollectionVariables = computed(() => filterUsedVariables(store.activeCollection?.variables || []))
+
+const addRequestVariable = () => {
+  if (!store.activeRequest) return
+  showOnlyUsedVariables.value = false
+  if (!store.activeRequest.variables) store.activeRequest.variables = []
+  store.activeRequest.variables.push({ key: '', value: '' })
+}
+
+const addCollectionVariable = () => {
+  if (!store.activeCollection) return
+  showOnlyUsedVariables.value = false
+  if (!store.activeCollection.variables) store.activeCollection.variables = []
+  store.activeCollection.variables.push({ key: '', value: '' })
+  store.persist()
+}
+
+const deleteVariable = (variables, row) => {
+  if (!variables) return
+  const index = variables.indexOf(row)
+  if (index >= 0) variables.splice(index, 1)
+}
+
+const deleteCollectionVariable = (row) => {
+  deleteVariable(store.activeCollection?.variables, row)
+  store.persist()
+}
+
 const variableConflicts = computed(() => {
   const normalizeKeys = (arr = []) => {
     return new Set(arr.map(v => (v?.key || '').trim()).filter(Boolean))
@@ -476,16 +546,23 @@ const variableConflicts = computed(() => {
 
   const envKeys = normalizeKeys(activeEnvironment.value?.variables || [])
   const collectionKeys = normalizeKeys(store.activeCollection?.variables || [])
+  const requestKeys = normalizeKeys(store.activeRequest?.variables || [])
   const pythonKeys = new Set(Object.keys(store.pythonVars || {}).map(k => (k || '').trim()).filter(Boolean))
 
   const envVsCollection = overlap(envKeys, collectionKeys)
+  const collectionVsRequest = overlap(collectionKeys, requestKeys)
+  const envVsRequest = overlap(envKeys, requestKeys)
   const envVsPython = overlap(envKeys, pythonKeys)
   const collectionVsPython = overlap(collectionKeys, pythonKeys)
+  const requestVsPython = overlap(requestKeys, pythonKeys)
 
   const sections = []
-  if (envVsCollection.length) sections.push(`Environment vs Collection: ${envVsCollection.join(', ')}`)
-  if (envVsPython.length) sections.push(`Environment vs Python: ${envVsPython.join(', ')}`)
-  if (collectionVsPython.length) sections.push(`Collection vs Python: ${collectionVsPython.join(', ')}`)
+  if (envVsCollection.length) sections.push(`Collection overrides Environment: ${envVsCollection.join(', ')}`)
+  if (envVsRequest.length) sections.push(`Request overrides Environment: ${envVsRequest.join(', ')}`)
+  if (collectionVsRequest.length) sections.push(`Request overrides Collection: ${collectionVsRequest.join(', ')}`)
+  if (envVsPython.length) sections.push(`Python overrides Environment: ${envVsPython.join(', ')}`)
+  if (collectionVsPython.length) sections.push(`Python overrides Collection: ${collectionVsPython.join(', ')}`)
+  if (requestVsPython.length) sections.push(`Python overrides Request: ${requestVsPython.join(', ')}`)
 
   return {
     hasConflict: sections.length > 0,
@@ -625,9 +702,13 @@ const formatSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
+const escapeHtml = (value) => {
+  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 const colorizeJSON = (json) => {
   let str = typeof json === 'string' ? json : JSON.stringify(json, null, 2)
-  str = str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  str = escapeHtml(str)
   return str.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, (m) => {
     let cls = 'json-num'; if (/^"/.test(m)) cls = /:$/.test(m) ? 'json-key' : 'json-string'
     return `<span class="${cls}">${m}</span>`
@@ -713,11 +794,14 @@ const importCollection = async () => {
         if (node.item && Array.isArray(node.item)) {
           node.item.forEach(sanitizeNode)
         } else if (node.request) {
+          if (node.notes === undefined) node.notes = ''
+          if (!node.variables) node.variables = []
           if (typeof node.request.url === 'object') {
             node.request.url = node.request.url.raw || ''
           }
           if (!node.request.header) node.request.header = []
           if (!node.request.body) node.request.body = { mode: 'raw', raw: '' }
+          if (node.request.description === undefined) node.request.description = ''
         }
       }
 
@@ -737,7 +821,15 @@ const importCollection = async () => {
 
 const selectPython = async (ext) => {
   const path = await window.electron.ipcRenderer.invoke('select-file', [{ name: ext, extensions: [ext] }])
-  if (path) { ext === 'exe' ? store.pythonExePath = path : store.pythonScriptPath = path }
+  if (path) {
+    if (ext === 'exe') {
+      store.pythonExePath = path
+      localStorage.setItem('pilot_python_exe', path)
+    } else {
+      store.pythonScriptPath = path
+      localStorage.setItem('pilot_python_script', path)
+    }
+  }
 }
 const runPython = async () => {
   if (!store.pythonScriptPath) return ElMessage.warning('Please select a python script first.')
@@ -751,9 +843,10 @@ const runPython = async () => {
 const resolveVars = (text) => {
   if (!text || typeof text !== 'string') return text || ''
   const staticMap = {}; store.activeCollection?.variables?.forEach(v => { if (v.key) staticMap[v.key] = v.value })
+  const requestMap = {}; store.activeRequest?.variables?.forEach(v => { if (v.key) requestMap[v.key] = v.value })
   const envMap = {}
   ;(activeEnvironment.value?.variables || []).forEach(v => { if (v.key) envMap[v.key] = v.value })
-  const combined = { ...envMap, ...staticMap, ...store.pythonVars }
+  const combined = { ...envMap, ...staticMap, ...requestMap, ...store.pythonVars }
   return text.replace(/\{\{(.+?)\}\}/g, (match, key) => combined[key.trim()] ?? match)
 }
 
@@ -857,10 +950,37 @@ const openCodeGenDialog = () => {
   refreshCodeSnippet()
 }
 
+const copyText = async (text, successMessage = 'Copied to clipboard!') => {
+  const value = text || ''
+  if (!value) return ElMessage.warning('Nothing to copy.')
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = value
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    ElMessage.success(successMessage)
+  } catch (err) {
+    ElMessage.error('Copy failed.')
+  }
+}
+
+const copyCodeSnippet = () => {
+  copyText(codeSnippet.value, 'Code copied to clipboard!')
+}
+
 
 // ================= STRICT ASYNC REQUEST SENDER (Ultra-Safe) =================
 const sendRequest = async () => {
-  if (store.hasConflict) return ElMessage.error("Please resolve Variable Conflicts first.")
   const req = store.activeRequest; if (!req) return
 
   const reqId = req._id || 'temp_id'
@@ -948,8 +1068,26 @@ const sendRequest = async () => {
   }
 }
 
+const getSearchRoot = () => {
+  if (currentRes.value.mode === 'pretty') return document.getElementById('responseBody')
+  if (currentRes.value.mode === 'raw') return document.getElementById('rawResponseBody')
+  return null
+}
+
+const getSearchMarks = () => {
+  return getSearchRoot()?.querySelectorAll('mark.search-mark') || []
+}
+
+const clearSearchMarks = (root) => {
+  root.querySelectorAll('mark.search-mark').forEach(m => {
+    const p = m.parentNode
+    p.replaceChild(document.createTextNode(m.textContent), m)
+    p.normalize()
+  })
+}
+
 const highlightCurrentMatch = () => {
-  const marks = document.querySelectorAll('#responseBody mark.search-mark')
+  const marks = getSearchMarks()
   if (!marks.length) return
   marks.forEach(m => { m.style.background = '#4c4d4f'; m.style.color = '#cfd3dc' })
   const currentMark = marks[currentSearchIndex.value - 1]
@@ -957,18 +1095,24 @@ const highlightCurrentMatch = () => {
 }
 
 const executeSearch = () => {
-  if (currentRes.value.mode !== 'pretty') {
+  const pre = getSearchRoot()
+  if (!pre) {
     searchCount.value = ''
     currentSearchIndex.value = 0
     return
   }
-  const pre = document.getElementById('responseBody'); if (!pre) return
-  pre.querySelectorAll('mark').forEach(m => { const p = m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize(); });
+  clearSearchMarks(pre)
   if (!searchQuery.value) { searchCount.value = ""; currentSearchIndex.value = 0; return; }
 
   const regex = new RegExp(`(${searchQuery.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
   const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT, null, false);
-  const nodes = []; let n; while (n = walker.nextNode()) { if (regex.test(n.nodeValue)) nodes.push(n); }
+  const nodes = []
+  let n = walker.nextNode()
+  while (n) {
+    regex.lastIndex = 0
+    if (regex.test(n.nodeValue)) nodes.push(n)
+    n = walker.nextNode()
+  }
   
   let matchCount = 0;
   nodes.forEach(node => {
@@ -983,16 +1127,22 @@ const executeSearch = () => {
   if (matchCount > 0) { currentSearchIndex.value = 1; highlightCurrentMatch(); } else { currentSearchIndex.value = 0; searchCount.value = "0 results"; }
 }
 
-const nextSearch = () => { const marks = document.querySelectorAll('#responseBody mark.search-mark'); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value >= marks.length ? 1 : currentSearchIndex.value + 1; highlightCurrentMatch() }
-const prevSearch = () => { const marks = document.querySelectorAll('#responseBody mark.search-mark'); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value <= 1 ? marks.length : currentSearchIndex.value - 1; highlightCurrentMatch() }
+const scheduleSearch = () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    nextTick(() => { executeSearch() })
+  }, 180)
+}
 
-watch([searchQuery, () => currentRes.value.html], () => { nextTick(() => { executeSearch() }) })
+const nextSearch = () => { const marks = getSearchMarks(); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value >= marks.length ? 1 : currentSearchIndex.value + 1; highlightCurrentMatch() }
+const prevSearch = () => { const marks = getSearchMarks(); if (!marks.length) return; currentSearchIndex.value = currentSearchIndex.value <= 1 ? marks.length : currentSearchIndex.value - 1; highlightCurrentMatch() }
+
+watch([searchQuery, () => currentRes.value.html, () => currentRes.value.rawText], scheduleSearch)
 watch(() => currentRes.value.mode, () => { nextTick(() => { executeSearch() }) })
 
 const copyResponse = () => { 
   if (currentRes.value.mode === 'pretty' || currentRes.value.mode === 'raw') {
-    navigator.clipboard.writeText(currentRes.value.rawText); 
-    ElMessage.success('Copied to clipboard!') 
+    copyText(currentRes.value.rawText)
   }
 }
 
@@ -1071,6 +1221,8 @@ const restoreHistory = (h) => {
   const newReq = { 
     _id: newReqId, 
     name: "History: " + (h.url.split('?')[0].split('/').pop() || 'Request').substring(0, 15), 
+    notes: '',
+    variables: [],
     request: { 
       method: h.method || 'GET', 
       url: h.url || '', 
@@ -1303,7 +1455,8 @@ body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; overfl
 /* Response Panel */
 #response-panel { display: flex; flex-direction: column; flex-shrink: 0; background: var(--bg); border-top: 1px solid var(--border); }
 .res-toolbar { padding: 8px 15px; background: var(--sidebar); display: flex; border-bottom: 1px solid var(--border); align-items: center; }
-#responseBody { flex: 1; margin: 0; padding: 15px; background: #1e1e1e; color: #d4d4d4; font-family: monospace; overflow: auto; font-size: 13px; line-height: 1.5; }
+#responseBody,
+#rawResponseBody { flex: 1; margin: 0; padding: 15px; background: #1e1e1e; color: #d4d4d4; font-family: monospace; overflow: auto; font-size: 13px; line-height: 1.5; }
 .response-preview-box { flex: 1; padding: 12px; background: #1e1e1e; overflow: auto; display: flex; align-items: center; justify-content: center; }
 .response-preview-frame { width: 100%; height: 100%; border: none; background: #fff; min-height: 300px; }
 
