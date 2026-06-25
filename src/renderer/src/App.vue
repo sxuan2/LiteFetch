@@ -84,6 +84,13 @@
                 <path d="M13 6l-2 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               </svg>
             </el-button>
+            <el-button class="top-icon-btn" circle title="Export request report" @click="exportRequestReport">
+              <svg class="top-icon-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 3v10" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+                <path d="M8 9l4 4 4-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M5 15v4h14v-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </el-button>
           </div>
         </div>
 
@@ -122,7 +129,24 @@
                   <el-table-column label="Value" min-width="250" resizable><template #default="scope"><el-input v-model="scope.row.value" placeholder="Value" size="small" clearable></el-input></template></el-table-column>
                   <el-table-column width="80" align="center"><template #default="scope"><el-button type="danger" link aria-label="Delete header" @click="store.activeRequest.request.header.splice(scope.$index, 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
                 </el-table>
-                <el-button style="margin-top: 15px;" @click="store.activeRequest.request.header.push({key:'', value:'', enabled:true})">+ Add Header</el-button>
+                <div style="display:flex; gap:10px; margin-top: 15px;">
+                  <el-button @click="store.activeRequest.request.header.push({key:'', value:'', enabled:true})">+ Add Header</el-button>
+                  <el-dropdown trigger="click" @command="applyHeaderPreset">
+                    <el-button type="primary" plain>+ Common</el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="json">JSON API</el-dropdown-item>
+                        <el-dropdown-item command="bearer">Bearer Auth</el-dropdown-item>
+                        <el-dropdown-item command="no-cache">No Cache</el-dropdown-item>
+                        <el-dropdown-item command="tracing">Tracing IDs</el-dropdown-item>
+                        <el-dropdown-item command="form">Form URL Encoded</el-dropdown-item>
+                        <el-dropdown-item command="accept-json" divided>Accept: application/json</el-dropdown-item>
+                        <el-dropdown-item command="content-json">Content-Type: application/json</el-dropdown-item>
+                        <el-dropdown-item command="user-agent">User-Agent</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
               </div>
             </el-tab-pane>
 
@@ -430,6 +454,7 @@ const initCache = (tabId) => {
       rawText: 'Ready.',
       code: '',
       time: '',
+      requestedAt: '',
       size: '',
       previewType: 'none',
       previewHtml: '',
@@ -597,6 +622,89 @@ const removeEnvironment = (idx) => {
   if (!environments.value.length) environments.value.push(defaultEnv())
   if (removed?.id === activeEnvId.value) activeEnvId.value = environments.value[0].id
   persistEnvironments()
+}
+
+const headerPresets = {
+  json: [
+    { key: 'Accept', value: 'application/json' },
+    { key: 'Content-Type', value: 'application/json' }
+  ],
+  bearer: [
+    { key: 'Authorization', value: 'Bearer {{token}}' }
+  ],
+  'no-cache': [
+    { key: 'Cache-Control', value: 'no-cache' },
+    { key: 'Pragma', value: 'no-cache' }
+  ],
+  tracing: [
+    { key: 'X-Request-ID', value: '{{request_id}}' },
+    { key: 'X-Correlation-ID', value: '{{correlation_id}}' }
+  ],
+  form: [
+    { key: 'Content-Type', value: 'application/x-www-form-urlencoded' }
+  ],
+  'accept-json': [
+    { key: 'Accept', value: 'application/json' }
+  ],
+  'content-json': [
+    { key: 'Content-Type', value: 'application/json' }
+  ],
+  'user-agent': [
+    { key: 'User-Agent', value: 'LiteFetch/1.0' }
+  ]
+}
+
+const ensureVariable = (variables, key, value = '') => {
+  if (!variables || !key) return false
+  const exists = variables.some(v => (v.key || '').trim() === key)
+  if (!exists) {
+    variables.push({ key, value })
+    return true
+  }
+  return false
+}
+
+const ensurePresetVariables = (headers) => {
+  const raw = headers.map(h => h.value || '').join('\n')
+  const keys = [...raw.matchAll(/\{\{(.+?)\}\}/g)].map(m => m[1].trim()).filter(Boolean)
+  if (!keys.length || !store.activeRequest) return
+
+  if (!store.activeRequest.variables) store.activeRequest.variables = []
+  if (!activeEnvironment.value.variables) activeEnvironment.value.variables = []
+
+  let envChanged = false
+  keys.forEach(key => {
+    if (key === 'token') {
+      envChanged = ensureVariable(activeEnvironment.value.variables, key) || envChanged
+    } else {
+      ensureVariable(store.activeRequest.variables, key)
+    }
+  })
+  if (envChanged) persistEnvironments()
+}
+
+const upsertHeader = (header) => {
+  const headers = store.activeRequest?.request?.header
+  if (!headers || !header.key) return false
+  const existing = headers.find(h => (h.key || '').trim().toLowerCase() === header.key.toLowerCase())
+  if (existing) {
+    existing.value = header.value
+    existing.enabled = true
+    return false
+  }
+  headers.push({ key: header.key, value: header.value, enabled: true })
+  return true
+}
+
+const applyHeaderPreset = (command) => {
+  const headers = headerPresets[command] || []
+  if (!store.activeRequest || !headers.length) return
+  let addedCount = 0
+  headers.forEach(header => {
+    if (upsertHeader(header)) addedCount += 1
+  })
+  ensurePresetVariables(headers)
+  ElMessage.success(addedCount ? 'Header preset added.' : 'Header preset updated.')
 }
 
 const handleKeydown = (e) => {
@@ -978,6 +1086,179 @@ const copyCodeSnippet = () => {
   copyText(codeSnippet.value, 'Code copied to clipboard!')
 }
 
+const formatDateTime = (value) => {
+  if (!value) return ''
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString()
+}
+
+const safeFileName = (value) => {
+  return String(value || 'request')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, '_')
+    .slice(0, 80) || 'request'
+}
+
+const collectUsedVariableKeys = (parts = []) => {
+  const keys = new Set()
+  parts.join('\n').replace(/\{\{(.+?)\}\}/g, (_match, key) => {
+    const normalized = key.trim()
+    if (normalized) keys.add(normalized)
+    return ''
+  })
+  return keys
+}
+
+const buildVariableSourceMap = () => {
+  const sourceMap = new Map()
+  const addVariables = (source, variables = []) => {
+    variables.forEach(v => {
+      if (v?.key) sourceMap.set(v.key, { source, value: v.value ?? '' })
+    })
+  }
+  addVariables('Environment', activeEnvironment.value?.variables || [])
+  addVariables('Collection', store.activeCollection?.variables || [])
+  addVariables('Request', store.activeRequest?.variables || [])
+  addVariables('Python', Object.entries(store.pythonVars || {}).map(([key, value]) => ({ key, value })))
+  return sourceMap
+}
+
+const renderCodeBlock = (value) => {
+  const text = String(value || '')
+  if (!text) return ''
+  try {
+    return `<pre class="json-code">${colorizeJSON(JSON.parse(text))}</pre>`
+  } catch {
+    return `<pre>${escapeHtml(text)}</pre>`
+  }
+}
+
+const formatUsedVariablesForReport = (usedKeys, sourceMap) => {
+  const rows = [...usedKeys]
+    .map(key => {
+      const resolved = sourceMap.get(key)
+      return `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(resolved?.source || 'Unresolved')}</td><td><code>${escapeHtml(resolved?.value ?? '')}</code></td></tr>`
+    })
+    .join('')
+
+  return `
+    <section>
+      <h2>Variables Used</h2>
+      ${rows ? `<table><thead><tr><th>Key</th><th>Source</th><th>Value</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">None</p>'}
+    </section>
+  `
+}
+
+const downloadHtml = (html, fileName) => {
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+const exportRequestReport = () => {
+  const req = store.activeRequest
+  const payload = buildFinalRequest()
+  if (!req || !payload) return ElMessage.warning('No active request selected.')
+
+  const response = currentRes.value
+  const exportedAt = new Date()
+  const bodyText = payload.bodyData == null
+    ? ''
+    : (typeof payload.bodyData === 'string' ? payload.bodyData : JSON.stringify(payload.bodyData, null, 2))
+  const headersRows = Object.entries(payload.headersObj)
+    .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td><code>${escapeHtml(value)}</code></td></tr>`)
+    .join('')
+  const usedVariableKeysForReport = collectUsedVariableKeys([
+    req.request?.url || '',
+    ...(req.request?.header || []).filter(h => h?.enabled !== false).flatMap(h => [h.key || '', h.value || '']),
+    req.request?.body?.raw || ''
+  ])
+  const variableSourceMap = buildVariableSourceMap()
+  const responseText = response.rawText && response.rawText !== 'Ready.' ? response.rawText : 'No response captured.'
+  const requestName = req.name || 'Untitled Request'
+
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${escapeHtml(requestName)} - LiteFetch Report</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; padding: 32px; font-family: "Segoe UI", Arial, sans-serif; color: #202124; background: #f6f8fa; }
+    main { max-width: 1120px; margin: 0 auto; background: #fff; border: 1px solid #d8dee4; border-radius: 8px; padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    h2 { margin: 28px 0 10px; font-size: 16px; border-bottom: 1px solid #d8dee4; padding-bottom: 6px; }
+    .meta { color: #57606a; font-size: 13px; margin-bottom: 20px; }
+    .grid { display: grid; grid-template-columns: 160px 1fr; gap: 8px 16px; font-size: 14px; }
+    .label { color: #57606a; font-weight: 600; }
+    code, pre { font-family: Consolas, "SFMono-Regular", monospace; }
+    pre { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; background: #0f1720; color: #e6edf3; border-radius: 6px; padding: 14px; line-height: 1.5; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border: 1px solid #d8dee4; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #f6f8fa; }
+    td:first-child { width: 220px; font-weight: 600; }
+    td code { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+    .method { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #0969da; color: #fff; font-weight: 700; }
+    .muted { color: #57606a; }
+    .json-key { color: #79c0ff; }
+    .json-string { color: #a5d6ff; }
+    .json-num { color: #d2a8ff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(requestName)}</h1>
+    <div class="meta">LiteFetch request report</div>
+
+    <section>
+      <h2>Request</h2>
+      <div class="grid">
+        <div class="label">Method</div><div><span class="method">${escapeHtml(payload.method)}</span></div>
+        <div class="label">Resolved URL</div><div><code>${escapeHtml(payload.finalUrl)}</code></div>
+        <div class="label">Environment</div><div>${escapeHtml(activeEnvironment.value?.name || '')}</div>
+        <div class="label">Requested At</div><div>${escapeHtml(formatDateTime(response.requestedAt)) || '<span class="muted">Not sent in this session</span>'}</div>
+        <div class="label">Exported At</div><div>${escapeHtml(formatDateTime(exportedAt))}</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Sent Headers</h2>
+      ${headersRows ? `<table><thead><tr><th>Header</th><th>Value</th></tr></thead><tbody>${headersRows}</tbody></table>` : '<p class="muted">None</p>'}
+    </section>
+
+    ${formatUsedVariablesForReport(usedVariableKeysForReport, variableSourceMap)}
+
+    <section>
+      <h2>Resolved Body</h2>
+      ${bodyText ? renderCodeBlock(bodyText) : '<p class="muted">None</p>'}
+    </section>
+
+    <section>
+      <h2>Response</h2>
+      <div class="grid">
+        <div class="label">Status</div><div>${escapeHtml(response.code || '') || '<span class="muted">None</span>'}</div>
+        <div class="label">Duration</div><div>${escapeHtml(response.time || '') || '<span class="muted">None</span>'}</div>
+        <div class="label">Size</div><div>${escapeHtml(response.size || '') || '<span class="muted">None</span>'}</div>
+      </div>
+      ${renderCodeBlock(responseText)}
+    </section>
+  </main>
+</body>
+</html>`
+
+  const stamp = exportedAt.toISOString().replace(/[:.]/g, '-')
+  downloadHtml(html, `LiteFetch_${safeFileName(requestName)}_${stamp}.html`)
+  ElMessage.success('Request report exported.')
+}
+
 
 // ================= STRICT ASYNC REQUEST SENDER (Ultra-Safe) =================
 const sendRequest = async () => {
@@ -1010,6 +1291,7 @@ const sendRequest = async () => {
   cache.code = 'Loading...'
   cache.time = ''
   cache.size = ''
+  cache.requestedAt = new Date().toISOString()
   cache.previewType = 'none' // Reset preview state
   searchQuery.value = '' 
   const startTime = Date.now()
@@ -1179,6 +1461,7 @@ const appendToHistory = (req, cache) => {
       code: cache.code,
       time: cache.time,
       size: cache.size,
+      requestedAt: cache.requestedAt || '',
       // Save preview state into history
       previewType: cache.previewType || 'none',
       previewHtml: cache.previewHtml || '',
@@ -1240,6 +1523,7 @@ const restoreHistory = (h) => {
       code: h.responseCache.code || h.statusCode,
       time: h.responseCache.time || '',
       size: h.responseCache.size || '',
+      requestedAt: h.responseCache.requestedAt || '',
       // Restore preview data
       previewType: h.responseCache.previewType || 'none', 
       previewHtml: h.responseCache.previewHtml || '', 
